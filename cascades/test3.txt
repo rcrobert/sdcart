@@ -1,0 +1,4 @@
+test3object1.xml
+test3object2.xml
+test3object3.xml
+test3object4.xml
