@@ -67,6 +67,14 @@ class DisplayManager(object):
         """
         self.homescreen.remove_item(index)
 
+    def set_warning_label(self, warning):
+        """Update the displayed warning.
+
+        :param warning: String to display as a warning.
+        :return: None.
+        """
+        self.homescreen.set_warning_label(warning)
+
     def get_num_items(self):
         """Check the number of items in the HomeScreen display.
 
@@ -163,6 +171,8 @@ class HomeScreen(ListScreen):
         self.event_callback = event_callback
         self._price_string = StringVar()
         self._price_string.set('Total: ${: .2f}'.format(self.get_price_total()))
+        self._warning_string = StringVar()
+        self._warning_string.set('')
 
         # build our buttons and place them into the grid
         self.produce_button = Button(self, text='Scan Produce', command=self._produce_button_callback)
@@ -186,6 +196,11 @@ class HomeScreen(ListScreen):
         self.price_label = Label(self, textvariable=self._price_string)
         self.price_label.grid(row=4, column=1, sticky=W)
         self._change_fontsize(self.price_label, 16)
+
+        # build our warning label it is associated with a variable to dynamically update
+        self.warning_label = Label(self, textvariable=self._warning_string)
+        self.warning_label.grid(row=4, column=2, columnspan=3, sticky=W)
+        self._change_fontsize(self.warning_label, 14)
 
         # build our item list as a Listbox and associated controls
         self.item_listbox = Listbox(self)
@@ -219,6 +234,14 @@ class HomeScreen(ListScreen):
         self._price_total = val
 
         self._price_string.set('Total: ${:.2f}'.format(self.get_price_total()))
+
+    def set_warning_label(self, warning):
+        """Update the displayed warning.
+
+        :param warning: String to display as a warning.
+        :return: None.
+        """
+        self._warning_string.set(warning)
 
     def add_item(self, item):
         """Add a new item to the displayed list.

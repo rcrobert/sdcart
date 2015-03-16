@@ -212,9 +212,6 @@ class WeightManager(object):
 
 
 class CartManager(object):
-    W_WIDTH = 800
-    W_HEIGHT = 480
-
     def __init__(self):
         self.pending_items = Queue(maxsize=20)
         self.completed_items = Queue(maxsize=20)
@@ -348,14 +345,21 @@ class CartManager(object):
         self.weight_manager.update()
 
         if self.weight_manager.error:
+            # Update the warning label
             if self.weight_manager.error_type == WeightManager.OUT_OF_RANGE:
                 print 'Weight out of range'
                 print 'Act: ', self.weight_manager.weight
                 print 'Exp: ', self.weight_manager.expected_weight
+                self.display.set_warning_label('Weight out of range')
             elif self.weight_manager.error_type == WeightManager.WAITING_FOR_ADD:
                 print 'Please add item to cart'
+                self.display.set_warning_label('Please add item to cart')
             elif self.weight_manager.error_type == WeightManager.WAITING_FOR_REMOVE:
                 print 'Please remove item from cart'
+                self.display.set_warning_label('Please remove item from cart')
+        else:
+            # Clear the warning displayed
+            self.display.set_warning_label('')
 
         # Keep display weight updated in the produce screen
         if self.display.current_screen == self.display.producescreen:
