@@ -1,0 +1,6 @@
+# ignore non-source files
+*.pyc
+*.o
+
+# ignore images/ directory
+images/
