@@ -98,9 +98,9 @@ class CameraThreaded(threading.Thread):
                         elif cascade == 'Banana':
                             possible_items.append('Banana')
                         elif cascade == 'Asparagus':
-                            possible_items.append('Asparagus')
+                            possible_items.append('Asparagus Spears')
                         elif cascade == 'Lettuce':
-                            possible_items.append('Lettuce')
+                            possible_items.append('Iceberg Lettuce')
                         elif cascade == 'Kale':
                             possible_items.append('Kale')
                     elif region == 'Region3':

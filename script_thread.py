@@ -21,13 +21,13 @@ vals = re.findall(r"\d*\.\d*", out)
 cascade_list = []
 
 # determine color region
-if float(vals[1]) <= 55 or float(vals[1]) > 280:
+if float(vals[1]) <= 22 or float(vals[1]) > 280:
     found = 1
     with open('./cascades/test1.txt') as text:
         for line in text:
             cascade_list.append(line.rstrip())
 
-if 55 < float(vals[1]) <= 150:
+if 22 < float(vals[1]) <= 150:
     found = 2
     with open('./cascades/test2.txt') as text:
         for line in text:

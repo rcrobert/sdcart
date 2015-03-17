@@ -337,6 +337,7 @@ class ADCController(threading.Thread):
         self._ADC2 = None
 
         # Initialize GPIO
+        GPIO.cleanup()
         GPIO.setmode(GPIO.BOARD)
 
         # Initialize lock for sharing weight
@@ -359,6 +360,8 @@ class ADCController(threading.Thread):
         self._last_weight = 0
 
     def run(self):
+        self.initialize()
+
         # Check if its initialized, raise an error
         if not self._initialized:
             raise ADCError('ADCs must be initialized before running')
@@ -497,7 +500,13 @@ class ADCController(threading.Thread):
                             new_steady1 = sum(array1) / len(array1)
                             deltaWeight1 = new_steady1 - steadyVal_1
                             if self.to_grams(deltaWeight1, self.LOAD_CELL_1) < 20000:
-                                self.weight += self.to_grams(deltaWeight1, self.LOAD_CELL_1)
+                                # Block to acquire the lock
+                                if self.weight_lock.acquire():
+                                    self.weight += self.to_grams(deltaWeight1, self.LOAD_CELL_1)
+
+                                    # Release when done
+                                    self.weight_lock.release()
+
                                 print("steady val: " + repr(steadyVal_1))
                                 print("LC1 grams: " + repr(self.to_grams(deltaWeight1, self.LOAD_CELL_1)))
                             steadyVal_1 = new_steady1
@@ -559,7 +568,13 @@ class ADCController(threading.Thread):
                             new_steady2 = sum(array2) / len(array2)
                             deltaWeight2 = new_steady2 - steadyVal_2
                             if self.to_grams(deltaWeight2, self.LOAD_CELL_2) < 20000:
-                                self.weight += self.to_grams(deltaWeight2, self.LOAD_CELL_2)
+                                # Block to acquire the lock
+                                if self.weight_lock.acquire():
+                                    self.weight += self.to_grams(deltaWeight2, self.LOAD_CELL_2)
+
+                                    # Release when done
+                                    self.weight_lock.release()
+
                                 # print("steady val: " + repr(steadyVal_2))
                                 print("LC2 grams: " + repr(self.to_grams(deltaWeight2, self.LOAD_CELL_2)))
                             steadyVal_2 = new_steady2

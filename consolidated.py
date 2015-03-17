@@ -81,6 +81,10 @@ class WeightManager(object):
         # Check the new total weight
         self.weight = self.get_weight()
 
+        # No zero weights, very small weights should be zero
+        if self.weight < 2.00:
+            self.weight = 0.00
+
         # Check if pending additions or removals are resolved
         if self.pending_addition:
             if self._check_in_range():
@@ -105,12 +109,8 @@ class WeightManager(object):
 
         # For produce, we want to ignore security weight changes, keep produce_weight updated
         elif self.produce_mode:
-            print 'Produce mode'
             # Update produce weight
             self.produce_weight = self.get_weight() - self._snapshot_weight
-
-            # DEBUG
-            self.produce_weight = 1.0
 
             # No errors can exist in produce mode
             self.error = False
@@ -242,7 +242,7 @@ class CartManager(object):
 
         # Instantiate threads
         self.threads = {
-            'barcode': BarcodeThreaded(scan_dir='/dev/hidraw2'),
+            'barcode': BarcodeThreaded(scan_dir='/dev/hidraw1'),
             'camera': CameraThreaded(),
             'adc': self.weight_manager.adc_controller
         }
@@ -297,9 +297,8 @@ class CartManager(object):
 
             tmp.request_info()
 
-            # Barcode items need to be added to the scale
-            if tmp.barcode:
-                self.weight_manager.add_item(tmp)
+            # Add item to weight manager
+            self.weight_manager.add_item(tmp)
 
             # Update current list of items
             self.item_list.append(tmp)
@@ -328,21 +327,28 @@ class CartManager(object):
 
         # Check for OpenCV processing completion
         if self.threads['camera'].process_complete_event.is_set():
-            # Clear the display image
-            self.display.update_image(None)
-
             if self.display.current_screen == self.display.picturescreen:
                 # Update produce list, unhandled Empty exception to indicate an error
-                self.display.update_produce_list(self.threads['camera'].completed_item_queue.get_nowait())
+                new_list = self.threads['camera'].completed_item_queue.get_nowait()
 
-                # Clear the display weight on entry
-                self.display.set_weight(0.0)
+                if new_list:
+                    # Clear the image
+                    self.display.update_image(None)
 
-                # Set to produce mode
-                self.weight_manager.start_produce_mode()
+                    # Update the list
+                    self.display.update_produce_list(new_list)
 
-                # Change screens
-                self.display.change_screen(self.display.producescreen)
+                    # Clear the display weight on entry
+                    self.display.set_weight(0.0)
+
+                    # Set to produce mode
+                    self.weight_manager.start_produce_mode()
+
+                    # Change screens
+                    self.display.change_screen(self.display.producescreen)
+                else:
+                    # Do not change screens, display something
+                    self.display.set_warning_label_picture('Item not recognized')
 
             # Reset flag
             self.threads['camera'].process_complete_event.clear()
@@ -353,18 +359,18 @@ class CartManager(object):
         if self.weight_manager.error:
             # Update the warning label
             if self.weight_manager.error_type == WeightManager.OUT_OF_RANGE:
-                self.display.set_warning_label('Weight out of range')
+                self.display.set_warning_label_home('Weight out of range')
             elif self.weight_manager.error_type == WeightManager.WAITING_FOR_ADD:
-                self.display.set_warning_label('Please add item to cart')
+                self.display.set_warning_label_home('Please add item to cart')
             elif self.weight_manager.error_type == WeightManager.WAITING_FOR_REMOVE:
-                self.display.set_warning_label('Please remove item from cart')
+                self.display.set_warning_label_home('Please remove item from cart')
         else:
             # Clear the warning displayed
-            self.display.set_warning_label('')
+            self.display.set_warning_label_home('')
 
         # Keep display weight updated in the produce screen
         if self.display.current_screen == self.display.producescreen:
-            self.display.set_weight(self.weight_manager.produce_weight)
+            self.display.set_weight(Item.grams_to_pounds(self.weight_manager.produce_weight))
 
         # Schedule another interrupt
         self.root.after(200, self.runtime_interrupt)
@@ -416,6 +422,9 @@ class CartManager(object):
             if event_type == EVENT_BTN_ACCEPT:
                 # Make sure an image has been taken
                 if self.image_taken:
+                    # Display that it is processing
+                    self.display.set_warning_label_picture('Processing...')
+
                     # Set flag to process the image, completion is checked in runtime_interrupt
                     self.threads['camera'].process_complete_event.clear()
                     self.threads['camera'].process_event.set()
@@ -436,17 +445,17 @@ class CartManager(object):
         # Handle produce screen events
         elif self.display.current_screen == self.display.producescreen:
             if event_type == EVENT_BTN_ACCEPT:
-                # Stop produce measurement
-                self.weight_manager.end_produce_mode()
-                self.weight_manager.add_produce()
+                # Produce cannot be weight 0
+                if self.weight_manager.produce_weight > 2.0:
+                    # Stop produce measurement
+                    self.weight_manager.end_produce_mode()
 
-                # Queue the selected item for processing
-                # TODO: need to create produce items with a weight, use self.weight_manager.produce_weight
-                item = Item(name=kwargs.get('selection'))
-                self.pending_items.put_nowait(item)
+                    # Queue the selected item for processing
+                    item = Item(name=kwargs.get('selection'), weight=self.weight_manager.produce_weight)
+                    self.pending_items.put_nowait(item)
 
-                # Return to HomeScreen
-                self.display.change_screen(self.display.homescreen)
+                    # Return to HomeScreen
+                    self.display.change_screen(self.display.homescreen)
             elif event_type == EVENT_BTN_NEWIMAGE:
                 # Stop produce measurement
                 self.weight_manager.end_produce_mode()

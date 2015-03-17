@@ -37,7 +37,7 @@ class Item(object):
         s += 'Price: ' + str(self.price) + '\n'
         s += 'Weight: ' + str(self.weight) + '\n'
         s += 'Barcode: ' + str(self.barcode) + '\n'
-        s += 'Cascades: ' + str(self.cascades) + '\n'
+        s += 'Deviation: ' + str(self.d_weight) + '\n'
 
         return s
 
@@ -47,9 +47,6 @@ class Item(object):
         :param callback: User-specified function to be called when a request finishes.
         :return:
         """
-
-        self.price = 10.20
-        self.weight = 1.00
 
         # populate item data based on how it was scanned in
         if self.barcode:
@@ -80,8 +77,8 @@ class Item(object):
                 # Error if more than one result for produce name
                 raise ItemError('Multiple results for produce name')
 
-            # TODO: convert to pounds from grams
-            self.price = float(rows[0][0]) * self.grams_to_pounds(self.weight)
+            self.price = round(float(rows[0][0]) * self.grams_to_pounds(self.weight), 2)
+            self.d_weight = 10.0
 
             # Add to database, update cart list on the database
             self.CURSOR.execute("INSERT INTO shopping_cart (item_name, item_weight, item_price)"
@@ -92,7 +89,7 @@ class Item(object):
     @staticmethod
     def grams_to_pounds(val):
         """Convert value from grams to pounds"""
-        return val * 0.00220462
+        return round(val * 0.00220462, 2)
 
 def main():
     N = Item(barcode='602652170652')
