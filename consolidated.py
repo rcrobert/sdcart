@@ -8,6 +8,7 @@ from barcode import BarcodeThreaded
 from camera import CameraThreaded
 from item import Item
 from gui import *
+from adc_driver import ADCController
 
 # PLANNED CHANGES
 # * Need to add weight sensing into the mix for certain produce items. They are already put into the pending item Queue
@@ -59,6 +60,8 @@ class WeightManager(object):
     def __init__(self):
         self.error = False
         self.error_type = None
+
+        self.adc_controller = ADCController()
 
         self.busy = False
         self.produce_mode = False
@@ -202,7 +205,25 @@ class WeightManager(object):
         self.produce_mode = False
 
     def get_weight(self):
-        return self.weight
+        """Get the current weight reading from the ADCs.
+
+        Retrieves the current weight reading from the ADCs. Uses thread-safe access of their variable. If it cannot read
+        the variable during the call, return the current reading.
+
+        :return: New weight total from the ADCs if lock can be acquired, else return current weight.
+        """
+        # Initialize to current weight
+        weight = self.weight
+
+        # Attempt to acquire the lock
+        if self.adc_controller.weight_lock.acquire(False):
+            # Save the weight value
+            weight = self.adc_controller.weight
+
+            # Release the lock
+            self.adc_controller.weight_lock.release()
+
+        return weight
 
     def _check_in_range(self):
         if (self.expected_weight - self.deviation) <= self.weight <= (self.expected_weight + self.deviation):
@@ -214,7 +235,6 @@ class WeightManager(object):
 class CartManager(object):
     def __init__(self):
         self.pending_items = Queue(maxsize=20)
-        self.completed_items = Queue(maxsize=20)
         self.item_list = []
 
         # Instantiate weight manager
@@ -224,13 +244,13 @@ class CartManager(object):
         self.threads = {
             'barcode': BarcodeThreaded(scan_dir='/dev/hidraw2'),
             'camera': CameraThreaded(),
-            'server': threading.Thread(target=self.server_thread_target)
+            'adc': self.weight_manager.adc_controller
         }
 
         # Configure threads
         self.threads['barcode'].daemon = False
         self.threads['camera'].daemon = False
-        self.threads['server'].daemon = True
+        self.threads['adc'].daemon = False
 
         # Instantiate GUI
         self.root = Tk()
@@ -266,30 +286,16 @@ class CartManager(object):
 
         print 'main shutting down...'
 
-    def server_thread_target(self):
-        """Process Items from the pending item queue.
-
-        :return: None.
-        """
-        while True:
-            # Blocking call to check for incomplete items
-            item = self.pending_items.get()
-
-            # Simulate turnaround time
-            item.request_info()
-            time.sleep(0.5)
-
-            # Place it in the complete item queue
-            self.completed_items.put(item)
-
     def runtime_interrupt(self):
         """Check periodically for queue management and weight changes.
 
         :return: None.
         """
         try:
-            # Check for items completed by the server
-            tmp = self.completed_items.get_nowait()
+            # Check for items pending SQL data
+            tmp = self.pending_items.get_nowait()
+
+            tmp.request_info()
 
             # Barcode items need to be added to the scale
             if tmp.barcode:
@@ -347,15 +353,10 @@ class CartManager(object):
         if self.weight_manager.error:
             # Update the warning label
             if self.weight_manager.error_type == WeightManager.OUT_OF_RANGE:
-                print 'Weight out of range'
-                print 'Act: ', self.weight_manager.weight
-                print 'Exp: ', self.weight_manager.expected_weight
                 self.display.set_warning_label('Weight out of range')
             elif self.weight_manager.error_type == WeightManager.WAITING_FOR_ADD:
-                print 'Please add item to cart'
                 self.display.set_warning_label('Please add item to cart')
             elif self.weight_manager.error_type == WeightManager.WAITING_FOR_REMOVE:
-                print 'Please remove item from cart'
                 self.display.set_warning_label('Please remove item from cart')
         else:
             # Clear the warning displayed
@@ -366,7 +367,7 @@ class CartManager(object):
             self.display.set_weight(self.weight_manager.produce_weight)
 
         # Schedule another interrupt
-        self.root.after(1000, self.runtime_interrupt)
+        self.root.after(200, self.runtime_interrupt)
 
     def gui_event_handler(self, event_type, **kwargs):
         """Callback function for events from the GUI.

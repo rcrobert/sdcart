@@ -59,7 +59,7 @@ class Item(object):
             self.CONN.commit()
 
             # Fetch the item data
-            self.CURSOR.execute("SELECT name,weight,price FROM item_db WHERE barcode_id='{}'".format(self.barcode))
+            self.CURSOR.execute("SELECT name,weight,price,deviation FROM item_db WHERE barcode_id='{}'".format(self.barcode))
             rows = self.CURSOR.fetchall()
 
             if len(rows) > 1:
@@ -68,8 +68,9 @@ class Item(object):
 
             # Populate item
             self.name = rows[0][0]
-            self.weight = rows[0][1]
+            self.weight = float(rows[0][1])
             self.price = float(rows[0][2])
+            self.d_weight = float(rows[0][3])
         elif self.name:
             # Get total price
             self.CURSOR.execute("SELECT price_per_pound FROM produce_db WHERE name='{}'".format(self.name))
@@ -80,13 +81,18 @@ class Item(object):
                 raise ItemError('Multiple results for produce name')
 
             # TODO: convert to pounds from grams
-            self.price = float(rows[0][0]) * self.weight
+            self.price = float(rows[0][0]) * self.grams_to_pounds(self.weight)
 
             # Add to database, update cart list on the database
             self.CURSOR.execute("INSERT INTO shopping_cart (item_name, item_weight, item_price)"
                                 "VALUES (%s,%s,%s)", (self.name, self.weight, self.price))
         else:
             self.name = 'OtherItem'
+
+    @staticmethod
+    def grams_to_pounds(val):
+        """Convert value from grams to pounds"""
+        return val * 0.00220462
 
 def main():
     N = Item(barcode='602652170652')
