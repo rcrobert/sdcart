@@ -3,4 +3,5 @@
 *.o
 
 # ignore images/ directory
-images/
+images/*.jpg
+!images/img_capture.jpg
