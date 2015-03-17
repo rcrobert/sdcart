@@ -3,6 +3,7 @@ import sys
 from Queue import Queue, Empty, Full
 import time
 from Tkinter import *
+import pymysql
 
 from barcode import BarcodeThreaded
 from camera import CameraThreaded
@@ -11,16 +12,6 @@ from gui import *
 from adc_driver import ADCController
 
 # PLANNED CHANGES
-# * Need to add weight sensing into the mix for certain produce items. They are already put into the pending item Queue
-#   but they should not be placed in the pending item Queue until their weight is measured fully. Do we need another
-#   screen? Or do we display the delta weight on the produce confirmation screen? Either way weight needs to be
-#   populated before it is placed into pending items.
-#
-# * Need to add some sort of halt flag to the barcode thread. When it is expecting an item to be added, it should not be
-#   allowed to scan a new item.
-#
-# * See above. We also need to have a cancel button in HomeScreen to cancel a pending barcode item being added to the
-#   cart if they change their mind.
 
 # BUGS
 
@@ -28,19 +19,6 @@ from adc_driver import ADCController
 # * Tkinter is NOT THREAD-SAFE. Make sure to keep all processing inside the .after callback function or inside of other
 #   thread-safe data types.
 
-# Maybe have something like pending_addition and pending_removal. We only allow one at a time and one of each.
-
-# pending_addition means we are watching new weight and either updating the display on ProduceScreen or comparing it to
-# the weight we are expecting. Once ProduceScreen is accepted or the weight matches, we cancel pending_addition.
-
-# pending_removal means we are watching new weight and a reduction equal to the removed item. In the case of removing
-# produce, we do need to add some tolerance values as the floating point weights will never be identical. Produce should
-# probably just include some expected % error.
-
-# the weight sensing should probably be its own module
-# ISSUE: do we require that an item be scanned before being added to the cart? Yes
-# ISSUE: do we require that an item be removed in the GUI before being removed from the cart? for simplicity Yes
-# for above issues, working in both directions is very complicated
 
 # Members
 # busy - binary flag that is set while in produce_mode, or while waiting for add_item or remove_item
@@ -56,6 +34,7 @@ class WeightManager(object):
     WAITING_FOR_ADD = 'waiting for add'
     WAITING_FOR_REMOVE = 'waiting for remove'
     OUT_OF_RANGE = 'out of range'
+    WRONG_ITEM = 'wrong item'
 
     def __init__(self):
         self.error = False
@@ -75,37 +54,61 @@ class WeightManager(object):
 
         self.weight = 0.0
         self.expected_weight = 0.0
-        self.deviation = 0.0
+
+        # Allowed deviation in running total
+        self.deviation = 0.05
 
     def update(self):
         # Check the new total weight
         self.weight = self.get_weight()
 
-        # No zero weights, very small weights should be zero
+        # No negative weights, very small weights should be zero
         if self.weight < 2.00:
             self.weight = 0.00
 
+        if self.expected_weight < 2.00:
+            self.expected_weight = 0.00
+
         # Check if pending additions or removals are resolved
         if self.pending_addition:
-            if self._check_in_range():
+            # If the change in weight is what we expect for the item
+            if self._check_in_range(self.weight, self._snapshot_weight + self._pending_item.weight,
+                                    self._pending_item.d_weight):
                 # The item has been added
                 self.busy = False
                 self.pending_addition = False
                 self._pending_item = None
-            else:
+
+            # Else if the weight has not yet changed
+            elif self._check_in_range(self.weight, self._snapshot_weight, self._snapshot_weight * self.deviation):
                 # Still waiting for it to be added
                 self.error = True
                 self.error_type = self.WAITING_FOR_ADD
+
+            # Else there was a change but it was wrong
+            else:
+                self.error = True
+                self.error_type = self.WRONG_ITEM
+
         elif self.pending_removal:
-            if self._check_in_range():
+            # If the change in weight is what we expect for the item
+            if self._check_in_range(self.weight, self._snapshot_weight - self._pending_item.weight,
+                                    self._pending_item.d_weight):
                 # The item has been removed
                 self.busy = False
                 self.pending_removal = False
                 self._pending_item = None
-            else:
+
+            # Else if the weight has not yet changed
+            elif self._check_in_range(self.weight, self._snapshot_weight, self._snapshot_weight * self.deviation):
                 # Still waiting for it to be removed
                 self.error = True
                 self.error_type = self.WAITING_FOR_REMOVE
+
+            # Else there was a change but it was wrong
+            else:
+                self.error = True
+                self.error_type = self.WRONG_ITEM
 
         # For produce, we want to ignore security weight changes, keep produce_weight updated
         elif self.produce_mode:
@@ -117,7 +120,7 @@ class WeightManager(object):
 
         # Check for weight mismatches
         else:
-            if self._check_in_range():
+            if self._check_in_range(self.weight, self.expected_weight, self.expected_weight * self.deviation):
                 # Valid weight, reset errors
                 self.error = False
             else:
@@ -125,30 +128,34 @@ class WeightManager(object):
                 self.error = True
                 self.error_type = self.OUT_OF_RANGE
 
-    def add_item(self, item):
+    def add_item(self, item, produce=False):
         # Cannot be called if we are already busy with another operation
 
-        # Update the new expected values
-        self.expected_weight += item.weight
-        self.deviation += item.d_weight
+        if produce:
+            self.expected_weight += item.weight
+        else:
+            # Update the new expected values
+            self.expected_weight += item.weight
+            # self.deviation += item.d_weight
 
-        # Flag as busy with waiting for an addition
-        self.busy = True
-        self.pending_addition = True
+            self._snapshot_weight = self.weight
 
-        # Save new item
-        self._pending_item = item
+            # Flag as busy with waiting for an addition
+            self.busy = True
+            self.pending_addition = True
 
-    def add_produce(self):
-        # Increase our expected weight to match
-        self.expected_weight += self.produce_weight
+            # Save new item
+            self._pending_item = item
 
     def remove_item(self, item):
         # Cannot be called if we are already busy with another operation
 
         # Update the new expected values
         self.expected_weight -= item.weight
-        self.deviation -= item.d_weight
+        # self.deviation -= item.d_weight
+
+        # Save a temporary weight
+        self._snapshot_weight = self.weight
 
         # Flag as busy with waiting for a removal
         self.busy = True
@@ -164,7 +171,7 @@ class WeightManager(object):
             if self.pending_addition:
                 # Reset expected weight
                 self.expected_weight -= self._pending_item.weight
-                self.deviation -= self._pending_item.d_weight
+                # self.deviation -= self._pending_item.d_weight
 
                 # Reset flags
                 self.busy = False
@@ -175,7 +182,7 @@ class WeightManager(object):
             elif self.pending_removal:
                 # Reset expected weight
                 self.expected_weight += self._pending_item.weight
-                self.deviation += self._pending_item.d_weight
+                # self.deviation += self._pending_item.d_weight
 
                 # Reset flags
                 self.busy = False
@@ -225,11 +232,17 @@ class WeightManager(object):
 
         return weight
 
-    def _check_in_range(self):
-        if (self.expected_weight - self.deviation) <= self.weight <= (self.expected_weight + self.deviation):
+    @staticmethod
+    def _check_in_range(actual, expected, deviation):
+        if (expected - deviation) <= actual <= (expected + deviation):
             return True
         else:
             return False
+
+        # if (self.expected_weight - self.deviation) <= self.weight <= (self.expected_weight + self.deviation):
+        #     return True
+        # else:
+        #     return False
 
 
 class CartManager(object):
@@ -251,6 +264,11 @@ class CartManager(object):
         self.threads['barcode'].daemon = False
         self.threads['camera'].daemon = False
         self.threads['adc'].daemon = False
+
+        # Reset SQL cart data
+        Item.CURSOR.execute("DELETE FROM shopping_cart WHERE 1")
+        Item.CONN.commit()
+        self.sql_update_count = 0
 
         # Instantiate GUI
         self.root = Tk()
@@ -298,7 +316,10 @@ class CartManager(object):
             tmp.request_info()
 
             # Add item to weight manager
-            self.weight_manager.add_item(tmp)
+            if tmp.barcode:
+                self.weight_manager.add_item(tmp)
+            else:
+                self.weight_manager.add_item(tmp, produce=True)
 
             # Update current list of items
             self.item_list.append(tmp)
@@ -356,10 +377,13 @@ class CartManager(object):
         # Check weight values
         self.weight_manager.update()
 
+        # Check for errors
         if self.weight_manager.error:
             # Update the warning label
             if self.weight_manager.error_type == WeightManager.OUT_OF_RANGE:
                 self.display.set_warning_label_home('Weight out of range')
+            elif self.weight_manager.error_type == WeightManager.WRONG_ITEM:
+                self.display.set_warning_label_home('Incorrect item')
             elif self.weight_manager.error_type == WeightManager.WAITING_FOR_ADD:
                 self.display.set_warning_label_home('Please add item to cart')
             elif self.weight_manager.error_type == WeightManager.WAITING_FOR_REMOVE:
@@ -371,6 +395,13 @@ class CartManager(object):
         # Keep display weight updated in the produce screen
         if self.display.current_screen == self.display.producescreen:
             self.display.set_weight(Item.grams_to_pounds(self.weight_manager.produce_weight))
+
+        # Update SQL every 4th iteration
+        self.sql_update_count += 1
+        if self.sql_update_count == 4:
+            Item.CURSOR.execute("UPDATE shopping_cart SET current_load='{}' ORDER BY scan_time LIMIT 1".format(int(self.weight_manager.weight)))
+            Item.CONN.commit()
+            self.sql_update_count = 0
 
         # Schedule another interrupt
         self.root.after(200, self.runtime_interrupt)
@@ -398,7 +429,7 @@ class CartManager(object):
                 pass
             elif event_type == EVENT_BTN_REMOVEITEM:
                 # Do not allow if items are still pending
-                if not self.weight_manager.busy:
+                if not self.weight_manager.busy and not self.weight_manager.error:
                     # Remove the item from our list
                     selection = kwargs.get('index')
                     tmp = self.item_list.pop(selection)
@@ -406,13 +437,20 @@ class CartManager(object):
                     # Remove from display
                     self.display.remove_item(selection)
 
+                    # Remove from remote database list
+                    Item.CURSOR.execute("DELETE FROM shopping_cart WHERE item_name='{}' ORDER BY scan_time LIMIT 1".format(tmp.name))
+                    Item.CONN.commit()
+
                     # Notify weight manager
                     self.weight_manager.remove_item(tmp)
             elif event_type == EVENT_BTN_CANCEL:
                 # Must be an action pending
                 if self.weight_manager.cancel_operation():
                     # Cancel pending action
-                    self.item_list.pop()
+                    tmp = self.item_list.pop()
+
+                    Item.CURSOR.execute("DELETE FROM shopping_cart WHERE item_name='{}' ORDER BY scan_time LIMIT 1".format(tmp.name))
+                    Item.CONN.commit()
 
                     # Remove from display
                     self.display.remove_item(self.display.get_num_items() - 1)

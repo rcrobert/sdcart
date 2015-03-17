@@ -1,7 +1,3 @@
 # ignore non-source files
 *.pyc
 *.o
-
-# ignore images/ directory
-images/*.jpg
-!images/img_capture.jpg

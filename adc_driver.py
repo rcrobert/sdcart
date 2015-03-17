@@ -88,7 +88,7 @@ class ADC(object):
         self.spi = spidev.SpiDev()
         self.spi.open(port, chip)
         self.spi.cshigh = False
-        self.spi.max_speed_hz = 250000
+        self.spi.max_speed_hz = 1000000
         self.spi.mode = 0b11
 
         # Use GPIO for chip select, not the built-in
@@ -337,7 +337,6 @@ class ADCController(threading.Thread):
         self._ADC2 = None
 
         # Initialize GPIO
-        GPIO.cleanup()
         GPIO.setmode(GPIO.BOARD)
 
         # Initialize lock for sharing weight
@@ -350,19 +349,20 @@ class ADCController(threading.Thread):
         self.term_event = threading.Event()
 
         # Configurable settings
-        self.average_count = 250.0
+        self.average_count = 60.0
         self.shift = 6
         self.threshold = 20
         self.deviation_limit = 1.0
-        self.steady_count = 10
+        self.steady_count = 5
 
         # Variables used in run()
         self._last_weight = 0
 
     def run(self):
+        # Initialize the ADCs
         self.initialize()
 
-        # Check if its initialized, raise an error
+        # Check if its initialized, raise an error, THIS SHOULD NEVER HAPPEN WITH INITIALIZE() CALL IN RUN
         if not self._initialized:
             raise ADCError('ADCs must be initialized before running')
 
@@ -382,12 +382,15 @@ class ADCController(threading.Thread):
         tare_2_ready = False
         tare_3_ready = False
         tare_4_ready = False
+        gramLimit = 0
+
         read_LC1 = False
         read_LC2 = False
         read_LC3 = False
         read_LC4 = False
-        gramLimit = 0
-        lastGrams2 = 0
+
+        totalChange_grams = 0
+
 
         # Arrays for checking for stable values
         array1 = []
@@ -445,6 +448,8 @@ class ADCController(threading.Thread):
                 GPIO.cleanup()
                 break
 
+
+
             # Get Data
             # print 'Reading ADC1'
             self.select_chip(self.CHIP_1)
@@ -454,10 +459,18 @@ class ADCController(threading.Thread):
             self.select_chip(self.CHIP_2)
             data2 = self._ADC2.ReadDataReg()
 
+
+            deltaGrams_LC1 = 0
+            deltaGrams_LC2 = 0
+            deltaGrams_LC3 = 0
+            deltaGrams_LC4 = 0
+
+
             # ADC 1 DATA
             if not data[1] >> 7:
 
                 if (data[1] << 7) == 0x00:     #channel 1 --- LOAD CELL #1
+                    read_LC1 = True
 
                     if data[1] == 0x40:
                         print("Channel 1 error")
@@ -478,9 +491,9 @@ class ADCController(threading.Thread):
                             avg_sum += val
                         ch1_ADC1['average'] = (avg_sum / self.average_count)
 
-                        delta1 = ch1_ADC1['average'] - oldAvg1
-                        deltaLB = self.delta_to_lbs(delta1, self.LOAD_CELL_1)
-
+                        # delta1 = ch1_ADC1['average'] - oldAvg1
+                        # deltaLB = self.delta_to_lbs(delta1, self.LOAD_CELL_1)
+                        # print(ch1_ADC1['average'])
                         if not steady1:
                             # print('Not steady')
                             #shift in value
@@ -499,18 +512,11 @@ class ADCController(threading.Thread):
                             #average
                             new_steady1 = sum(array1) / len(array1)
                             deltaWeight1 = new_steady1 - steadyVal_1
-                            if self.to_grams(deltaWeight1, self.LOAD_CELL_1) < 20000:
-                                # Block to acquire the lock
-                                if self.weight_lock.acquire():
-                                    self.weight += self.to_grams(deltaWeight1, self.LOAD_CELL_1)
-
-                                    # Release when done
-                                    self.weight_lock.release()
-
-                                print("steady val: " + repr(steadyVal_1))
-                                print("LC1 grams: " + repr(self.to_grams(deltaWeight1, self.LOAD_CELL_1)))
+                            if self.to_grams(deltaWeight1, self.LOAD_CELL_1) < 20000:   # protects from start up spike reading
+                                deltaGrams_LC1 = self.to_grams(deltaWeight1, self.LOAD_CELL_1)
+                                # print("deltaWeight1: " + repr(round(deltaWeight1, 1)))
+                                # print("LC1 grams: " + repr(self.to_grams(deltaWeight1, self.LOAD_CELL_1)))
                             steadyVal_1 = new_steady1
-                            read_LC1 = True
                             steady1 = True
 
                         if abs(steadyVal_1 - ch1_ADC1['average']) > self.deviation_limit:
@@ -521,8 +527,8 @@ class ADCController(threading.Thread):
                             array1.append(ch1_ADC1['average'])
 
                 elif data[1] & 0x01:       #channel 2 ---- LOAD CELL #2
-                    # print('data: ' + repr(data))
-                    # time.sleep(.2)
+                    read_LC2 = True
+
                     if data[1] == 0x41:
                         print("Channel 2 error")
 
@@ -546,8 +552,8 @@ class ADCController(threading.Thread):
                             avg_sum += val
                         ch2_ADC1['average'] = (avg_sum / self.average_count)
 
-                        delta2 = ch2_ADC1['average'] - oldAvg2
-                        deltaLB2 = self.delta_to_lbs(delta2, self.LOAD_CELL_2)
+                        # delta2 = ch2_ADC1['average'] - oldAvg2
+                        # deltaLB2 = self.delta_to_lbs(delta2, self.LOAD_CELL_2)
 
                         if not steady2:
                             # print('Not steady')
@@ -567,16 +573,10 @@ class ADCController(threading.Thread):
                             #average
                             new_steady2 = sum(array2) / len(array2)
                             deltaWeight2 = new_steady2 - steadyVal_2
-                            if self.to_grams(deltaWeight2, self.LOAD_CELL_2) < 20000:
-                                # Block to acquire the lock
-                                if self.weight_lock.acquire():
-                                    self.weight += self.to_grams(deltaWeight2, self.LOAD_CELL_2)
-
-                                    # Release when done
-                                    self.weight_lock.release()
-
+                            if self.to_grams(deltaWeight2, self.LOAD_CELL_2) < 20000:   # protects from start up spike reading
+                                deltaGrams_LC2 = self.to_grams(deltaWeight2, self.LOAD_CELL_2)
                                 # print("steady val: " + repr(steadyVal_2))
-                                print("LC2 grams: " + repr(self.to_grams(deltaWeight2, self.LOAD_CELL_2)))
+                                # print("LC2 grams: " + repr(self.to_grams(deltaWeight2, self.LOAD_CELL_2)))
                             steadyVal_2 = new_steady2
                             read_LC2 = True
                             steady2 = True
@@ -662,17 +662,26 @@ class ADCController(threading.Thread):
                             # print(repr(self.toGrams(ch2_ADC2['average'], self.LOAD_CELL_4)) + ' grams LC4')
                             # print(repr(ch2_ADC2['lbs']) + ' pounds')
                             oldAvg2_A2 = ch2_ADC2['average']
-            read_LC1 = False
-            read_LC2 = False
-            read_LC3 = False
-            read_LC4 = False
-            if abs(self.weight - self._last_weight) > .5:
-                # print("total weight: " + repr(currentWeight) + " lbs")
-                # print("grams: " + repr(round(currentWeight * 453.592, 1)) + " g")
-                print("total weight: " + repr(self.weight) + " grams")
-                print(repr(round(self.weight * 0.00220462, 3)) + " lbs")
+
+
+            if steady1 and steady2:
+                # print("got here")
+                totalChange_grams += deltaGrams_LC1 + deltaGrams_LC2 + deltaGrams_LC3 + deltaGrams_LC4
+                if abs(totalChange_grams) * 0.00220462 > .009:   # change in total weight has to change by .01 lbs
+                    if self.weight_lock.acquire():
+                        self.weight += totalChange_grams
+                        # Release when done
+                        self.weight_lock.release()
+                    self._last_weight = self.weight
+                    print("total weight: " + repr(self.weight) + " grams")
+                    print(repr(round(self.weight * 0.00220462, 3)) + " lbs")
+                    totalChange_grams = 0
+
+
+
+
                 # readCount += 1
-                self._last_weight = self.weight
+
 
     def initialize(self):
         # Instantiate ADCs
@@ -684,6 +693,8 @@ class ADCController(threading.Thread):
         # Iterate through all indices and ADC objects
         for chip, adc in enumerate(self._adc_list):
             print 'Initializing ADC: ', chip
+
+
 
             # Select the ADC we are working with
             self.select_chip(chip)
@@ -761,6 +772,16 @@ class ADCController(threading.Thread):
     def to_grams(cls, val, load_cell):
             if load_cell == cls.LOAD_CELL_1:
                 return round(val * 0.805 - 0.1295, 1)
+                # if abs(val) < 501:
+                #     return round(val * 0.8016 - 0.0495, 1)
+                # else:
+                #     if val > 0:
+                #         return round(val * 0.8042 - 4.9331, 1)
+                #     if val < 0:
+                #         return round(val * 0.8042 + 4.9331, 1)
+                #     # return round(val * 0.805 - 0.0695, 1)
+
+                #
             elif load_cell == cls.LOAD_CELL_2:
                 return round(val * 0.8153 + 0.1841, 1)
             elif load_cell == cls.LOAD_CELL_3:
@@ -771,7 +792,6 @@ class ADCController(threading.Thread):
 
 def main():
     adc_control = ADCController()
-    adc_control.initialize()
     adc_control.daemon = False
 
     print 'Starting...'

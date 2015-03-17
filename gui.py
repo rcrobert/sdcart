@@ -2,7 +2,7 @@ from Tkinter import *
 import tkFont
 from PIL import Image, ImageTk
 
-from item import Item
+# from item import Item
 
 # PLANNED MIGRATION:
 
@@ -35,7 +35,7 @@ class DisplayManager(object):
         self.event_callback = event_callback
 
         # Make the window borderless and specify absolute size
-        # root.overrideredirect(1)
+        root.overrideredirect(1)
         root.geometry('{}x{}'.format(self.W_WIDTH, self.W_HEIGHT))
         root.focus_set()
 
@@ -119,8 +119,7 @@ class DisplayManager(object):
             # Remove the current screen from the display
             self.current_screen.pack_forget()
 
-        # TODO: get this out of tis function, wrong location
-        # Perform set operations on the screen
+        # Perform set/reset operations on the new screen
         if screen == self.picturescreen:
             # Reset warning displays
             self.picturescreen.set_warning_label('')
@@ -128,7 +127,7 @@ class DisplayManager(object):
             # Reset button displays
             self.picturescreen.reset_buttons()
 
-        # Perform reset operations on the screen
+        # Perform set/reset operations on the old screen
         if self.current_screen == self.picturescreen:
             # Reset warning displays
             self.picturescreen.set_warning_label('')
@@ -146,17 +145,23 @@ class ListScreen(Frame):
     LIST_WIDTH = 540
     LIST_HEIGHT = 400
 
+    # Tuples for shared font styles
+    monospace_font = ('Courier', 16)
+    button_font = (14)
+    warning_font = (12)
+    info_font = (14)
+    price_font = (16)
+
     def __init__(self, root):
         # Frame is an old-style object, cannot use super()
         Frame.__init__(self, root)
 
         # Configure the last row and column to be expandable
+        self.rowconfigure(4, weight=1)
+        self.columnconfigure(4, weight=1)
 
         # Initialize variables
         self.parent = root
-
-        # DEBUG
-        root.bind('<Escape>', lambda e: self.parent.destroy())
 
         # Build structural frames
         self.list_frame = Frame(self, height=self.LIST_HEIGHT, width=self.LIST_WIDTH)
@@ -176,6 +181,28 @@ class ListScreen(Frame):
         self.button4_frame = Frame(self, height=100, width=160)
         self.button4_frame.grid(row=3, column=4)
 
+        # Create universal warning label
+        self._warning_string = StringVar()
+        self._warning_string.set('Very long text for testing the length allowed for warnings')
+
+        self.warning_label = Label(self, textvariable=self._warning_string, wraplength=260, font=self.warning_font,
+                                   anchor=N+W, justify=LEFT)
+        self.warning_label.grid(row=4, column=3, columnspan=2, sticky=W)
+
+    def set_warning_label(self, warning):
+        """Update the displayed warning.
+
+        :param warning: String to display as a warning.
+        :return: None.
+        """
+        self._warning_string.set(warning)
+
+    @staticmethod
+    def _change_fontfamily(widget, family):
+        font = tkFont.Font(font=widget['font'])
+        font['family'] = family
+        widget.configure(font=font)
+
     @staticmethod
     def _change_fontsize(widget, size):
         font = tkFont.Font(font=widget['font'])
@@ -194,47 +221,39 @@ class HomeScreen(ListScreen):
         self.event_callback = event_callback
         self._price_string = StringVar()
         self._price_string.set('Total: ${: .2f}'.format(self.get_price_total()))
-        self._warning_string = StringVar()
-        self._warning_string.set('')
+        # self._warning_string = StringVar()
+        # self._warning_string.set('')
 
         # build our buttons and place them into the grid
-        self.produce_button = Button(self, text='Scan Produce', command=self._produce_button_callback)
+        self.produce_button = Button(self, text='Scan Produce', command=self._produce_button_callback, font=self.button_font)
         self.produce_button.grid(row=0, column=4, sticky=N+E+S+W)
-        self._change_fontsize(self.produce_button, 14)
 
-        self.remove_button = Button(self, text='Remove Item', command=self._remove_button_callback)
+        self.remove_button = Button(self, text='Remove Item', command=self._remove_button_callback, font=self.button_font)
         self.remove_button.grid(row=1, column=4, sticky=N+E+S+W)
-        self._change_fontsize(self.remove_button, 14)
 
         # TODO: put Help back in when its implemented
-        self.help_button = Button(self, text='Help', command=lambda: self._help_button_callback())
+        self.help_button = Button(self, text='Help', command=self._help_button_callback, font=self.button_font)
         # self.help_button.grid(row=2, column=4, sticky=N+E+S+W)
-        self._change_fontsize(self.help_button, 14)
 
-        self.cancel_button = Button(self, text='Cancel', command=self._cancel_button_callback)
+        self.cancel_button = Button(self, text='Cancel', command=self._cancel_button_callback, font=self.button_font)
         self.cancel_button.grid(row=3, column=4, sticky=N+E+S+W)
-        self._change_fontsize(self.cancel_button, 14)
 
         # build our price label it is associated with a variable to dynamically update
-        self.price_label = Label(self, textvariable=self._price_string)
-        self.price_label.grid(row=4, column=1, sticky=W)
-        self._change_fontsize(self.price_label, 16)
+        self.price_label = Label(self, textvariable=self._price_string, font=self.price_font)
+        self.price_label.grid(row=4, column=0, sticky=W)
 
-        # build our warning label it is associated with a variable to dynamically update
-        self.warning_label = Label(self, textvariable=self._warning_string)
-        self.warning_label.grid(row=4, column=2, columnspan=3, sticky=W)
-        self._change_fontsize(self.warning_label, 14)
+        # # build our warning label it is associated with a variable to dynamically update
+        # self.warning_label = Label(self, textvariable=self._warning_string)
+        # self.warning_label.grid(row=4, column=2, columnspan=3, sticky=W)
+        # self._change_fontsize(self.warning_label, 14)
 
         # build our item list as a Listbox and associated controls
-        self.item_listbox = Listbox(self)
-        self._change_fontsize(self.item_listbox, 16)
+        self.item_listbox = Listbox(self, font=self.monospace_font)
         self.item_listbox.grid(row=0, column=0, columnspan=3, rowspan=4, sticky=N+E+S+W)
 
-        self.up_button = Button(self, text='Up', command=lambda: self.item_listbox.yview_scroll(-1, UNITS))
-        self._change_fontsize(self.up_button, 16)
+        self.up_button = Button(self, text='Up', command=lambda: self.item_listbox.yview_scroll(-1, UNITS), font=self.button_font)
         self.up_button.grid(row=0, column=3, rowspan=2, sticky=N+E+S+W)
-        self.down_button = Button(self, text='Down', command=lambda: self.item_listbox.yview_scroll(1, UNITS))
-        self._change_fontsize(self.down_button, 16)
+        self.down_button = Button(self, text='Down', command=lambda: self.item_listbox.yview_scroll(1, UNITS), font=self.button_font)
         self.down_button.grid(row=2, column=3, rowspan=2, sticky=N+E+S+W)
 
     ####################################################################################################################
@@ -258,14 +277,6 @@ class HomeScreen(ListScreen):
 
         self._price_string.set('Total: ${:.2f}'.format(self.get_price_total()))
 
-    def set_warning_label(self, warning):
-        """Update the displayed warning.
-
-        :param warning: String to display as a warning.
-        :return: None.
-        """
-        self._warning_string.set(warning)
-
     def add_item(self, item):
         """Add a new item to the displayed list.
 
@@ -277,7 +288,7 @@ class HomeScreen(ListScreen):
         price = item.price
 
         # append element
-        self.item_listbox.insert(END, '{:_<40}${:>.2f}'.format(name, price))
+        self.item_listbox.insert(END, '{:_<34}${:>.2f}'.format(name, price))
         self.item_list.append(item)
 
         # update price total
@@ -345,8 +356,8 @@ class PictureScreen(ListScreen):
         self.event_callback = event_callback
         self.image = None
 
-        self._warning_string = StringVar()
-        self._warning_string.set('')
+        # self._warning_string = StringVar()
+        # self._warning_string.set('')
 
         self._take_picture_string = StringVar()
         self._take_picture_string.set('Take Picture')
@@ -358,7 +369,7 @@ class PictureScreen(ListScreen):
         # self.down_button_frame.configure(width=50)
 
         # Build and display buttons
-        self.accept_button = Button(self, text='Accept', command=self._accept_button_callback)
+        self.accept_button = Button(self, text='Accept', command=self._accept_button_callback, font=self.button_font)
         self._change_fontsize(self.accept_button, 14)
 
         self.take_picture_button = Button(self, textvariable=self._take_picture_string, command=self._take_picture_button_callback)
@@ -374,14 +385,8 @@ class PictureScreen(ListScreen):
         self.image_label.grid(row=0, column=0, rowspan=4, columnspan=3, sticky=N+E+S+W)
 
         # Build and display label with advice
-        self.advice_label = Label(self, text='Ensure produce item is completely visible.')
-        self._change_fontsize(self.advice_label, 14)
+        self.advice_label = Label(self, text='Ensure produce item is completely visible.', font=self.info_font)
         self.advice_label.grid(row=4, column=0, columnspan=3, sticky=N+E+S+W)
-
-        # Build a warning label for later use
-        self.warning_label = Label(self, textvariable=self._warning_string)
-        self._change_fontsize(self.warning_label, 14)
-        self.warning_label.grid(row=4, column=3, columnspan=2, sticky=N+E+S+W)
 
     ####################################################################################################################
     # PUBLIC METHODS
@@ -403,14 +408,6 @@ class PictureScreen(ListScreen):
             # Update and display again
             self.image_label.configure(image=self.image)
             self.image_label.grid(row=0, column=0, rowspan=4, columnspan=3, sticky=N+E+S+W)
-
-    def set_warning_label(self, warning):
-        """Update the displayed warning.
-
-        :param warning: String to display as a warning.
-        :return: None.
-        """
-        self._warning_string.set(warning)
 
     def reset_buttons(self):
         self.picture_taken = False
@@ -449,32 +446,31 @@ class ProduceScreen(ListScreen):
         self.weight_string = StringVar()
         self.weight_string.set('{:>.2f}lbs'.format(self.weight_total))
 
-        self.select_button = Button(self, text='Accept Weight', command=self._select_button_callback)
-        self._change_fontsize(self.select_button, 14)
+        self._warning_string.set('Please add produce item to cart')
+
+        self.select_button = Button(self, text='Accept Weight', command=self._select_button_callback,
+                                    font=self.button_font)
         self.select_button.grid(row=0, column=4, sticky=N+E+S+W)
 
-        self.new_picture_button = Button(self, text='New Picture', command=self._new_picture_button_callback)
-        self._change_fontsize(self.new_picture_button, 14)
+        self.new_picture_button = Button(self, text='New Picture', command=self._new_picture_button_callback,
+                                         font=self.button_font)
         self.new_picture_button.grid(row=1, column=4, sticky=N+E+S+W)
 
-        self.cancel_button = Button(self, text='Cancel', command=self._cancel_button_callback)
-        self._change_fontsize(self.cancel_button, 14)
+        self.cancel_button = Button(self, text='Cancel', command=self._cancel_button_callback, font=self.button_font)
         self.cancel_button.grid(row=2, column=4, sticky=N+E+S+W)
 
-        self.produce_listbox = Listbox(self)
-        self._change_fontsize(self.produce_listbox, 16)
+        self.produce_listbox = Listbox(self, font=self.monospace_font)
         self.produce_listbox.grid(row=0, column=0, rowspan=4, columnspan=3, sticky=N+E+S+W)
 
-        self.weight_label = Label(self, textvariable=self.weight_string)
-        self._change_fontsize(self.weight_label, 14)
+        self.weight_label = Label(self, textvariable=self.weight_string, font=self.price_font)
         self.weight_label.grid(row=4, column=1, sticky=W)
 
-        self.up_button = Button(self, text='Up', command=lambda: self.produce_listbox.yview_scroll(-1, UNITS))
-        self._change_fontsize(self.up_button, 16)
+        self.up_button = Button(self, text='Up', command=lambda: self.produce_listbox.yview_scroll(-1, UNITS),
+                                font=self.button_font)
         self.up_button.grid(row=0, column=3, rowspan=2, sticky=N+E+S+W)
 
-        self.down_button = Button(self, text='Down', command=lambda: self.produce_listbox.yview_scroll(1, UNITS))
-        self._change_fontsize(self.down_button, 16)
+        self.down_button = Button(self, text='Down', command=lambda: self.produce_listbox.yview_scroll(1, UNITS),
+                                  font=self.button_font)
         self.down_button.grid(row=2, column=3, rowspan=2, sticky=N+E+S+W)
 
     ####################################################################################################################
@@ -517,15 +513,8 @@ class ProduceScreen(ListScreen):
 
 
 def main():
-    def other_task():
-        root.after(1, other_task)
-
     def event_handler(event_type, **kwargs):
         print event_type
-        if event_type == EVENT_BTN_ACCEPT:
-            print kwargs.get('selection', 'N/A')
-        elif event_type == EVENT_BTN_REMOVEITEM:
-            print kwargs.get('index', 'N/A')
 
     root = Tk()
     myapp = DisplayManager(root, event_handler)
