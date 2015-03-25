@@ -88,7 +88,7 @@ class ADC(object):
         self.spi = spidev.SpiDev()
         self.spi.open(port, chip)
         self.spi.cshigh = False
-        self.spi.max_speed_hz = 1000000
+        self.spi.max_speed_hz = 250000
         self.spi.mode = 0b11
 
         # Use GPIO for chip select, not the built-in
@@ -349,341 +349,15 @@ class ADCController(threading.Thread):
         self.term_event = threading.Event()
 
         # Configurable settings
+        self.num_chips = 2
+        self.num_load_cells = 4
         self.average_count = 60.0
         self.shift = 6
         self.threshold = 20
         self.deviation_limit = 1.0
-        self.steady_count = 5
+        self.steady_count = 100
 
-        # Variables used in run()
-        self._last_weight = 0
-
-    def run(self):
-        # Initialize the ADCs
-        self.initialize()
-
-        # Check if its initialized, raise an error, THIS SHOULD NEVER HAPPEN WITH INITIALIZE() CALL IN RUN
-        if not self._initialized:
-            raise ADCError('ADCs must be initialized before running')
-
-        TARE_OFFSET_1 = 0
-        TARE_OFFSET_2 = 0
-        TARE_OFFSET_3 = 0
-        TARE_OFFSET_4 = 0
-        oldAvg1 = 0
-        oldAvg2 = 0
-        oldAvg1_A2 = 0
-        oldAvg2_A2 = 0
-        lastVal = 0
-        lastVal2 = 0
-        lastVal_A2 = 0
-        lastVal2_A2 = 0
-        tare_1_ready = False
-        tare_2_ready = False
-        tare_3_ready = False
-        tare_4_ready = False
-        gramLimit = 0
-
-        read_LC1 = False
-        read_LC2 = False
-        read_LC3 = False
-        read_LC4 = False
-
-        totalChange_grams = 0
-
-
-        # Arrays for checking for stable values
-        array1 = []
-        array2 = []
-        array3 = []
-        array4 = []
-
-        for i in range(self.steady_count):
-            array1.append(0)
-            array2.append(0)
-            array3.append(0)
-            array4.append(0)
-
-        steadyVal_1 = 0
-        steadyVal_2 = 0
-        steadyVal_3 = 0
-        steadyVal_4 = 0
-
-        steady1 = True
-        steady2 = True
-        steady3 = True
-        steady4 = True
-
-        ch1_ADC1 = {
-            'values': [],
-            'average': 0,
-            'lbs': 0
-        }
-        ch2_ADC1 = {
-            'values': [],
-            'average': 0,
-            'lbs': 0
-        }
-        ch1_ADC2 = {
-            'values': [],
-            'average': 0,
-            'lbs': 0
-        }
-        ch2_ADC2 = {
-            'values': [],
-            'average': 0,
-            'lbs': 0
-        }
-
-        while True:
-            # Check termination signal for safely ending thread
-            if self.term_event.is_set():
-                # Perform any necessary cleanup steps
-                self.select_chip(self.CHIP_1)
-                self._ADC1.close()
-
-                self.select_chip(self.CHIP_2)
-                self._ADC2.close()
-
-                GPIO.cleanup()
-                break
-
-
-
-            # Get Data
-            # print 'Reading ADC1'
-            self.select_chip(self.CHIP_1)
-            data = self._ADC1.ReadDataReg()
-
-            # print 'Reading ADC2'
-            self.select_chip(self.CHIP_2)
-            data2 = self._ADC2.ReadDataReg()
-
-
-            deltaGrams_LC1 = 0
-            deltaGrams_LC2 = 0
-            deltaGrams_LC3 = 0
-            deltaGrams_LC4 = 0
-
-
-            # ADC 1 DATA
-            if not data[1] >> 7:
-
-                if (data[1] << 7) == 0x00:     #channel 1 --- LOAD CELL #1
-                    read_LC1 = True
-
-                    if data[1] == 0x40:
-                        print("Channel 1 error")
-
-                    if abs((data[0] >> self.shift) - lastVal) > self.threshold:
-                        ch1_ADC1['values'] = []
-                    if len(ch1_ADC1['values']) != self.average_count:
-                        ch1_ADC1['values'].append(data[0] >> self.shift)
-                        lastVal = data[0] >> self.shift
-                    else:
-                        ch1_ADC1['values'].pop(0)
-                        ch1_ADC1['values'].append(data[0] >> self.shift)
-                        lastVal = data[0] >> self.shift
-
-                        # compute average
-                        avg_sum = 0
-                        for val in ch1_ADC1['values']:
-                            avg_sum += val
-                        ch1_ADC1['average'] = (avg_sum / self.average_count)
-
-                        # delta1 = ch1_ADC1['average'] - oldAvg1
-                        # deltaLB = self.delta_to_lbs(delta1, self.LOAD_CELL_1)
-                        # print(ch1_ADC1['average'])
-                        if not steady1:
-                            # print('Not steady')
-                            #shift in value
-                            if len(array1) == self.steady_count:
-                                array1.pop(0)
-                            array1.append(ch1_ADC1['average'])
-
-                        if abs((max(array1) - min(array1))) > self.deviation_limit:
-                            # print('Out of bounds')
-                            steady1 = False
-                            array1 = []
-                            #shift in value
-                            array1.append(ch1_ADC1['average'])
-
-                        elif len(array1) == self.steady_count and not steady1:
-                            #average
-                            new_steady1 = sum(array1) / len(array1)
-                            deltaWeight1 = new_steady1 - steadyVal_1
-                            if self.to_grams(deltaWeight1, self.LOAD_CELL_1) < 20000:   # protects from start up spike reading
-                                deltaGrams_LC1 = self.to_grams(deltaWeight1, self.LOAD_CELL_1)
-                                # print("deltaWeight1: " + repr(round(deltaWeight1, 1)))
-                                # print("LC1 grams: " + repr(self.to_grams(deltaWeight1, self.LOAD_CELL_1)))
-                            steadyVal_1 = new_steady1
-                            steady1 = True
-
-                        if abs(steadyVal_1 - ch1_ADC1['average']) > self.deviation_limit:
-                            steady1 = False
-                            #shift in value
-                            if len(array1) == self.steady_count:
-                                array1.pop(0)
-                            array1.append(ch1_ADC1['average'])
-
-                elif data[1] & 0x01:       #channel 2 ---- LOAD CELL #2
-                    read_LC2 = True
-
-                    if data[1] == 0x41:
-                        print("Channel 2 error")
-
-                    if abs((data[0] >> self.shift) - lastVal2) > self.threshold:
-                        ch2_ADC1['values'] = []
-
-                    if len(ch2_ADC1['values']) != self.average_count:
-
-                        ch2_ADC1['values'].append(data[0] >> self.shift)
-                        lastVal2 = data[0] >> self.shift
-                    else:
-                        ch2_ADC1['values'].pop(0)
-                        ch2_ADC1['values'].append(data[0] >> self.shift)
-                        lastVal2 = data[0] >> self.shift
-
-
-
-                        # compute average
-                        avg_sum = 0
-                        for val in ch2_ADC1['values']:
-                            avg_sum += val
-                        ch2_ADC1['average'] = (avg_sum / self.average_count)
-
-                        # delta2 = ch2_ADC1['average'] - oldAvg2
-                        # deltaLB2 = self.delta_to_lbs(delta2, self.LOAD_CELL_2)
-
-                        if not steady2:
-                            # print('Not steady')
-                            #shift in value
-                            if len(array2) == self.steady_count:
-                                array2.pop(0)
-                            array2.append(ch2_ADC1['average'])
-
-                        if abs((max(array2) - min(array2))) > self.deviation_limit:
-                            # print('Out of bounds')
-                            steady2 = False
-                            array2 = []
-                            #shift in value
-                            array2.append(ch2_ADC1['average'])
-
-                        elif len(array2) == self.steady_count and not steady2:
-                            #average
-                            new_steady2 = sum(array2) / len(array2)
-                            deltaWeight2 = new_steady2 - steadyVal_2
-                            if self.to_grams(deltaWeight2, self.LOAD_CELL_2) < 20000:   # protects from start up spike reading
-                                deltaGrams_LC2 = self.to_grams(deltaWeight2, self.LOAD_CELL_2)
-                                # print("steady val: " + repr(steadyVal_2))
-                                # print("LC2 grams: " + repr(self.to_grams(deltaWeight2, self.LOAD_CELL_2)))
-                            steadyVal_2 = new_steady2
-                            read_LC2 = True
-                            steady2 = True
-
-                        if abs(steadyVal_2 - ch2_ADC1['average']) > self.deviation_limit:
-                            # print('Away from steady')
-                            steady2 = False
-                            #shift in value
-                            if len(array2) == self.steady_count:
-                                array2.pop(0)
-                            array2.append(ch2_ADC1['average'])
-
-            # ADC 2 DATA
-            if not data2[1] >> 7:
-
-                if (data2[1] << 7) == 0x00:     #channel 1              LOAD CELL #3
-
-                    if data2[1] == 0x40:
-                        print("Channel 1 - ADC 2 error")
-
-                    if abs((data2[0] >> self.shift) - lastVal_A2) > self.threshold:   # if value changes by a lot, reset moving average filter
-                        ch1_ADC2['values'] = []
-                    if len(ch1_ADC2['values']) != self.average_count:
-                        ch1_ADC2['values'].append(data2[0] >> self.shift)
-                        lastVal_A2 = data2[0] >> self.shift
-                    else:
-                        ch1_ADC2['values'].pop(0)
-                        ch1_ADC2['values'].append(data2[0] >> self.shift)
-                        lastVal_A2 = data2[0] >> self.shift
-
-                        # compute average
-                        avg_sum = 0
-                        for val in ch1_ADC2['values']:
-                            avg_sum += val
-                        ch1_ADC2['average'] = (avg_sum / self.average_count)
-
-                        delta1 = ch1_ADC2['average'] - oldAvg1_A2
-                        deltaLB = self.delta_to_lbs(delta1, self.LOAD_CELL_3)
-
-                        if abs(delta1) > .2:
-                            ch1_ADC2['lbs'] = self.to_lbs(ch1_ADC2['average'], self.LOAD_CELL_3)
-                            read_LC3 = True
-                            # print([round(delta1, 1), round(ch1_ADC2['average'] - LC3_OFFSET, 1), 'Load Cell 3'])
-                            # print(repr(self.toGrams(ch1_ADC2['average'], self.LOAD_CELL_3)) + ' grams LC3')
-                            # print(repr(ch1_ADC2['lbs']) + ' pounds')
-                            oldAvg1_A2 = ch1_ADC2['average']
-
-                elif data2[1] & 0x01:       #channel 2          LOAD CELL #4
-                    # print("data: " + repr(hex(data2[0] >> self.shift)))
-                    if data2[1] == 0x41:
-                        print("Channel 2-ADC 2 error")
-
-                    if abs((data2[0] >> self.shift) - lastVal2_A2) > self.threshold:
-                        ch2_ADC2['values'] = []
-
-                    if len(ch2_ADC2['values']) != self.average_count:
-                        ch2_ADC2['values'].append(data2[0] >> self.shift)
-                        lastVal2_A2 = data2[0] >> self.shift
-
-                    else:
-                        ch2_ADC2['values'].pop(0)
-                        ch2_ADC2['values'].append(data2[0] >> self.shift)
-                        lastVal2_A2 = data2[0] >> self.shift
-
-
-                        # compute average
-                        avg_sum = 0
-                        for val in ch2_ADC2['values']:
-                            avg_sum += val
-                        ch2_ADC2['average'] = (avg_sum / self.average_count)
-
-
-
-                        # display
-                        delta2 = ch2_ADC2['average'] - oldAvg2_A2
-                        deltaLB2 = self.delta_to_lbs(delta2, self.LOAD_CELL_4)
-
-                        if abs(deltaLB2) > .0021:
-                        # elif not tare and abs(delta2) > .2:
-                            ch2_ADC2['lbs'] = self.to_lbs(ch2_ADC2['average'], self.LOAD_CELL_4)
-                            read_LC4 = True
-                            # print([round(delta2, 1), round(ch2_ADC2['average'] - LC4_OFFSET, 1), 'Load Cell 4'])
-                            # print(repr(self.toGrams(ch2_ADC2['average'], self.LOAD_CELL_4)) + ' grams LC4')
-                            # print(repr(ch2_ADC2['lbs']) + ' pounds')
-                            oldAvg2_A2 = ch2_ADC2['average']
-
-
-            if steady1 and steady2:
-                # print("got here")
-                totalChange_grams += deltaGrams_LC1 + deltaGrams_LC2 + deltaGrams_LC3 + deltaGrams_LC4
-                if abs(totalChange_grams) * 0.00220462 > .009:   # change in total weight has to change by .01 lbs
-                    if self.weight_lock.acquire():
-                        self.weight += totalChange_grams
-                        # Release when done
-                        self.weight_lock.release()
-                    self._last_weight = self.weight
-                    print("total weight: " + repr(self.weight) + " grams")
-                    print(repr(round(self.weight * 0.00220462, 3)) + " lbs")
-                    totalChange_grams = 0
-
-
-
-
-                # readCount += 1
-
-
-    def initialize(self):
+    def _initialize(self):
         # Instantiate ADCs
         self._adc_list.append(ADC(0, 0, 16))
         self._adc_list.append(ADC(0, 1, 18))
@@ -693,8 +367,6 @@ class ADCController(threading.Thread):
         # Iterate through all indices and ADC objects
         for chip, adc in enumerate(self._adc_list):
             print 'Initializing ADC: ', chip
-
-
 
             # Select the ADC we are working with
             self.select_chip(chip)
@@ -714,6 +386,173 @@ class ADCController(threading.Thread):
 
         # Flag as initialized
         self._initialized = True
+
+    def run(self):
+        # Initialize the ADCs
+        self._initialize()
+
+        # Check if its initialized, raise an error, THIS SHOULD NEVER HAPPEN WITH INITIALIZE() CALL IN RUN
+        if not self._initialized:
+            raise ADCError('ADCs must be initialized before running')
+
+        """
+        Need:
+        -raw ADC read
+        -array for average
+        -average
+        -lastVal, raw ADC read data post-shift
+        -array for steady values
+        -steadyVal_x, last steady value
+        -steadyx, boolean stability state
+        """
+        class ChannelValues(object):
+            def __init__(self):
+                # Most recent and last raw ADC reads
+                self.read = 0
+                self.last_read = 0
+
+                # All values to average and the current average
+                self.average_array = []
+                self.average = 0.0
+
+                # Last set of stable values, current stable level, and boolean stability
+                self.stable_array = []
+                self.stable = 0.0
+                self.is_stable = True
+
+        # Instantiate value holders
+        channel_vals = []
+        read_data = [[], []]
+        delta_weight = 0.0
+
+        for i in xrange(self.num_load_cells):
+            channel_vals.append(ChannelValues())
+
+        # Initialize stable array
+        for ch in channel_vals:
+            for i in xrange(self.steady_count):
+                ch.stable_array.append(0)
+
+        while True:
+            # Check termination signal for safely ending thread
+            if self.term_event.is_set():
+                # Perform any necessary cleanup steps
+                self.select_chip(self.CHIP_1)
+                self._ADC1.close()
+
+                self.select_chip(self.CHIP_2)
+                self._ADC2.close()
+
+                GPIO.cleanup()
+                break
+
+            # Read data from both ADCs
+            self.select_chip(self.CHIP_1)
+            read_data[0] = self._ADC1.ReadDataReg()
+            self.select_chip(self.CHIP_2)
+            read_data[1] = self._ADC2.ReadDataReg()
+
+            # Iterate through ADC return data
+            for chip, data in enumerate(read_data):
+                # Check if data ready, if not skip this reading
+                if data[1] >> 7:
+                    continue
+
+                # Determine channel
+                if (data[1] << 7) == 0x00:
+                    channel = 0
+                elif data[1] & 0x01:
+                    channel = 1
+                else:
+                    # Raise an error if its neither channel?
+                    # TODO: what do we do if it is neither channel
+                    pass
+
+                # Index calculation given an ADC and channel, maps into class constant values for load cells
+                current_load_cell = chip * 2 + channel
+                channel_data = channel_vals[current_load_cell]
+
+                # TODO: fix LC4
+                if current_load_cell == self.LOAD_CELL_4:
+                    continue
+
+                # Shift out lower bits from raw data
+                shifted_data = data[0] >> self.shift
+
+                # If the raw read delta is greater than threshold, clear the average
+                if abs(shifted_data - channel_data.last_read) > self.threshold:
+                    # Indexes to Channel 1 on either ADC 1 or 2
+                    channel_data.average_array = []
+
+                # Build the array until we have average_count measurements
+                channel_data.average_array.append(shifted_data)
+                channel_data.last_read = shifted_data
+
+                if len(channel_data.average_array) > self.average_count:
+                    # Pop one value so we have average_count values
+                    channel_data.average_array.pop(0)
+
+                    # Compute new average
+                    channel_data.average = sum(channel_data.average_array) / self.average_count
+
+                    # If not stable, build the array
+                    if not channel_data.is_stable:
+                        # Shift in value
+                        if len(channel_data.stable_array) == self.steady_count:
+                            channel_data.stable_array.pop(0)
+                        channel_data.stable_array.append(channel_data.average)
+
+                    # If the array deviates, clear it and mark as unstable
+                    if abs(max(channel_data.stable_array) - min(channel_data.stable_array)) > self.deviation_limit:
+                        channel_data.is_stable = False
+                        channel_data.stable_array = [channel_data.average]
+
+                    # Else if we filled the array and it was unstable
+                    elif len(channel_data.stable_array) == self.steady_count and not channel_data.is_stable:
+                        new_stable = sum(channel_data.stable_array) / self.steady_count
+                        delta_val = new_stable - channel_data.stable
+
+                        # Check that the change in weight is large enough
+                        if self.to_grams(delta_val, current_load_cell) < 20000:
+                            # Track accumulated change
+                            delta_weight += self.to_grams(delta_val, current_load_cell)
+
+                            # DEBUG
+                            # print 'Stable Val: ', channel_data.stable
+                            print 'LC', (current_load_cell + 1), ' grams: ', delta_weight
+
+                        # Update the saved stable value
+                        channel_data.stable = new_stable
+                        channel_data.is_stable = True
+
+                    # If we deviate far enough from the old stable value, mark as unstable
+                    if abs(channel_data.stable - channel_data.average) > self.deviation_limit:
+                        channel_data.is_stable = False
+
+                        # Shift in value
+                        if len(channel_data.stable_array) == self.steady_count:
+                            channel_data.stable_array.pop(0)
+                        channel_data.stable_array.append(channel_data.average)
+
+            # Update only when the accumulated change is large enough
+            if abs(self.grams_to_lbs(delta_weight)) > 0.01:
+                # print("total weight: " + repr(currentWeight) + " lbs")
+                # print("grams: " + repr(round(currentWeight * 453.592, 1)) + " g")
+
+
+                # Block to acquire the lock
+                if self.weight_lock.acquire():
+                    # Update weight
+                    self.weight += delta_weight
+
+                    # Release when done
+                    self.weight_lock.release()
+
+                # Reset accumulated change
+                delta_weight = 0.0
+
+                print 'Total weight: ', round(self.weight, 3), ' grams'
+                print round(self.grams_to_lbs(self.weight), 3), ' lbs'
 
     def select_chip(self, chip):
         """Select an ADC to communicate with.
@@ -745,49 +584,20 @@ class ADCController(threading.Thread):
         # Disable continuous read
         self._adc_list[chip].writebytes([0x58])
 
-    @classmethod
-    def to_lbs(cls, val, load_cell):
-        if load_cell == cls.LOAD_CELL_1:
-            return round(((val - cls.LC1_OFFSET) * 0.8049 - 0.1281) * .00220462, 4)
-        elif load_cell == cls.LOAD_CELL_2:
-            return round(((val - cls.LC2_OFFSET) * 0.8153 + 0.1841) * .00220462, 4)
-        elif load_cell == cls.LOAD_CELL_3:
-            return round(((val - cls.LC3_OFFSET) * 0.8677 - 0.0041) * .00220462, 4)
-        elif load_cell == cls.LOAD_CELL_4:
-            return round(((val - cls.LC4_OFFSET) * 0.8732 - 0.0613) * .00220462, 4)
-
-    @classmethod
-    def delta_to_lbs(cls, val, load_cell):
-        # All values are for 7V
-        if load_cell == cls.LOAD_CELL_1:
-            return round((val * 0.8049 - 0.1281) * .00220462, 4)
-        elif load_cell == cls.LOAD_CELL_2:
-            return round((val * 0.8153 + 0.1841) * .00220462, 4)
-        elif load_cell == cls.LOAD_CELL_3:
-            return round((val * 0.8677 - 0.0041) * .00220462, 4)
-        elif load_cell == cls.LOAD_CELL_4:
-            return round((val * 0.8732 - 0.0613) * .00220462, 4)
+    @staticmethod
+    def grams_to_lbs(val):
+        return val * 0.00220462
 
     @classmethod
     def to_grams(cls, val, load_cell):
             if load_cell == cls.LOAD_CELL_1:
                 return round(val * 0.805 - 0.1295, 1)
-                # if abs(val) < 501:
-                #     return round(val * 0.8016 - 0.0495, 1)
-                # else:
-                #     if val > 0:
-                #         return round(val * 0.8042 - 4.9331, 1)
-                #     if val < 0:
-                #         return round(val * 0.8042 + 4.9331, 1)
-                #     # return round(val * 0.805 - 0.0695, 1)
-
-                #
             elif load_cell == cls.LOAD_CELL_2:
                 return round(val * 0.8153 + 0.1841, 1)
             elif load_cell == cls.LOAD_CELL_3:
-                return round((val - cls.LC3_OFFSET) * 0.8677 - 0.0041, 1)
+                return round(val * 1.2335 - 0.4163, 1)
             elif load_cell == cls.LOAD_CELL_4:
-                return round((val - cls.LC4_OFFSET) * 0.8733 - 0.0834, 1)
+                return round(val * 0.8733 - 0.0834, 1)
 
 
 def main():
