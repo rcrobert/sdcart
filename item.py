@@ -1,34 +1,36 @@
-import time
-import pymysql
-
-
 class ItemError(Exception):
     def __init__(self, args):
         self.args = args
 
 
 class Item(object):
-    """Class holds shopping cart item data. Used for packing and passing item data. This class is also responsible for
-    requesting complete item data from the server database."""
+    """Class that holds shopping cart item data. Used for packing and passing item data.
 
-    CONN = pymysql.connect(
-        host="db-01.soe.ucsc.edu",
-        user="sdp2015_echelon",
-        passwd="Jlbihf2015!",
-        database="sdp2015_echelon"
-    )
+    Args:
+        barcode (optional String): String value for the item's barcode. Default is None.
+        name (optional String): String value for the item's name. Default is None.
+        weight (optional float): Float value for the item's weight on creation. Default is None.
+        is_produce (optional bool): Boolean value indicating if this is a produce item. Default is False.
 
-    CURSOR = CONN.cursor()
-
-    def __init__(self, barcode=None, cascades=None, name=None, price=None, weight=None):
+    Attributes:
+        name (String): The item's name.
+        barcode (String): The item's barcode string.
+        weight (float): The item's total weight.
+        is_produce (bool): Whether the item is a produce item or not.
+        price (float): The price of the item.
+        price_per_pound (float): The price per pound of the item. Used only for produce items.
+        d_weight (float): The amount of deviation from the item's listed weight.
+    """
+    def __init__(self, barcode=None, name=None, weight=None, is_produce=False):
         self.barcode = barcode
-        self.cascades = cascades
         self.weight = weight
         self.name = name
-        self.price = price
+        self.is_produce = is_produce
 
-        self._is_populated = False
-        self.d_weight = 100.0
+        self.price_per_pound = None
+        self.d_weight = None
+
+        self._price = None
 
     def __repr__(self):
         s = ''
@@ -41,50 +43,33 @@ class Item(object):
 
         return s
 
-    def request_info(self, callback=None):
-        """Populates the item's information with database information.
-
-        :param callback: User-specified function to be called when a request finishes.
-        :return:
-        """
-
-        # populate item data based on how it was scanned in
-        if self.barcode:
-            # Add to database, update cart list on the database
-            self.CURSOR.execute("INSERT INTO shopping_cart (item_name, item_weight, item_price)"
-                                "SELECT name,weight,price FROM item_db WHERE barcode_id='{}'".format(self.barcode))
-            self.CONN.commit()
-
-            # Fetch the item data
-            self.CURSOR.execute("SELECT name,weight,price,deviation FROM item_db WHERE barcode_id='{}'".format(self.barcode))
-            rows = self.CURSOR.fetchall()
-
-            if len(rows) > 1:
-                # Error more than one result from barcode
-                raise ItemError('Multiple results for barcode')
-
-            # Populate item
-            self.name = rows[0][0]
-            self.weight = float(rows[0][1])
-            self.price = float(rows[0][2])
-            self.d_weight = float(rows[0][3])
-        elif self.name:
-            # Get total price
-            self.CURSOR.execute("SELECT price_per_pound FROM produce_db WHERE name='{}'".format(self.name))
-            rows = self.CURSOR.fetchall()
-
-            if len(rows) > 1:
-                # Error if more than one result for produce name
-                raise ItemError('Multiple results for produce name')
-
-            self.price = round(float(rows[0][0]) * self.grams_to_pounds(self.weight), 2)
-            self.d_weight = 10.0
-
-            # Add to database, update cart list on the database
-            self.CURSOR.execute("INSERT INTO shopping_cart (item_name, item_weight, item_price)"
-                                "VALUES (%s,%s,%s)", (self.name, self.weight, self.price))
+    @property
+    def price(self):
+        if self.is_produce:
+            # Do not attempt to round if either member is None type
+            if self.price_per_pound and self.weight:
+                return round(self.price_per_pound * self.weight, 2)
         else:
-            self.name = 'OtherItem'
+            if self._price:
+                return round(self._price, 2)
+
+        # Return None type if required members are still undefined
+        return None
+
+    @price.setter
+    def price(self, val):
+        if self.is_produce:
+            raise ItemError('cannot set produce price')
+        else:
+            self._price = val
+
+    @property
+    def weight_lbs(self):
+        return self.grams_to_pounds(self.weight)
+
+    @weight_lbs.setter
+    def weight_lbs(self, val):
+        raise ItemError('cannot set weight in pounds')
 
     @staticmethod
     def grams_to_pounds(val):
@@ -93,7 +78,13 @@ class Item(object):
 
 def main():
     N = Item(barcode='602652170652')
-    N.request_info()
+    N.price = 1.523
+    print N
+
+    M = Item(name='Kale', is_produce=True)
+    M.price_per_pound = 1.062
+    M.weight = 1.00
+    print M
 
 if __name__ == '__main__':
     main()

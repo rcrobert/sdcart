@@ -473,8 +473,8 @@ class ADCController(threading.Thread):
                 channel_data = channel_vals[current_load_cell]
 
                 # TODO: fix LC4
-                if current_load_cell == self.LOAD_CELL_4:
-                    continue
+                # if current_load_cell == self.LOAD_CELL_4:
+                #     continue
 
                 # Shift out lower bits from raw data
                 shifted_data = data[0] >> self.shift
@@ -591,13 +591,13 @@ class ADCController(threading.Thread):
     @classmethod
     def to_grams(cls, val, load_cell):
             if load_cell == cls.LOAD_CELL_1:
-                return round(val * 0.805 - 0.1295, 1)
+                return round(val * 0.5043 + 0.1361, 1)
             elif load_cell == cls.LOAD_CELL_2:
-                return round(val * 0.8153 + 0.1841, 1)
+                return round(val * 0.5043 + 0.1361, 1)
             elif load_cell == cls.LOAD_CELL_3:
-                return round(val * 1.2335 - 0.4163, 1)
+                return round(val * 0.5043 + 0.1361, 1)
             elif load_cell == cls.LOAD_CELL_4:
-                return round(val * 0.8733 - 0.0834, 1)
+                return round(val * 0.5043 + 0.1361, 1)
 
 
 def main():
