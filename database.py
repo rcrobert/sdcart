@@ -6,6 +6,9 @@ class DatabaseError(Exception):
     def __init__(self, args):
         self.args = args
 
+class NoItem(Exception):
+    def __init__(self, args):
+        self.args = args
 
 class Database(object):
     CONN = pymysql.connect(
@@ -24,7 +27,9 @@ class Database(object):
     def add_to_cart(cls, item):
         assert isinstance(item, Item)
         cls.CURSOR.execute("INSERT INTO shopping_cart (item_name, item_weight, item_price)"
-                           "VALUES (%s,%s,%s)", (item.name, item.price, item.weight))
+                           "VALUES (%s,%s,%s)", (item.name, item.weight, item.price))
+        cls.CONN.commit()
+        cls.CURSOR.execute("INSERT INTO history (item_name) VALUES (%s)", item.name)
         cls.CONN.commit()
 
     @classmethod
@@ -59,7 +64,8 @@ class Database(object):
                 raise DatabaseError('non-unique barcode in database')
             elif len(rows) < 1:
                 # Error non-existent barcode in database
-                raise DatabaseError('no results for barcode in database')
+                print 'No results'
+                raise NoItem('no results for barcode in database')
 
             # Populate item
             item.name = rows[0][0]
@@ -67,28 +73,80 @@ class Database(object):
             item.price = float(rows[0][2])
             item.d_weight = float(rows[0][3])
         else:
-            name = item.name
-            cls.CURSOR.execute("SELECT price_per_pound FROM produce_db WHERE name='{}'".format(name))
-            rows = cls.CURSOR.fetchall()
+            # Do not populate produce items this way
+            raise DatabaseError('use get_produce_list method for produce items')
 
-            if len(rows) > 1:
-                # Error non-unique barcode in database
-                raise DatabaseError('non-unique name in database')
-            elif len(rows) < 1:
-                # Error non-existent barcode in database
-                raise DatabaseError('no results for name in database')
+    @classmethod
+    def get_produce_list(cls, opencv_results):
+        item_list = []
 
-            # Populate item
-            item.price_per_pound = round(float(rows[0][0]), 2)
-            # TODO: this is an arbitrary deviation for produce, should be refined
-            item.d_weight = 10.0
+        for each in opencv_results:
+            region = each[0]
+            classifier = each[1]
 
-            # TODO: database will not be updated until produce item is committed with a weight
+            if classifier != 'None':
+                cls.CURSOR.execute("SELECT result,price_per_pound FROM produce_db_2 WHERE color='{}' AND "
+                                   "shape='{}' ORDER BY result".format(region, classifier))
+                rows = cls.CURSOR.fetchall()
+            else:
+                cls.CURSOR.execute("SELECT result,price_per_pound FROM produce_db_2 WHERE color='{}' ORDER BY "
+                                   "result".format(region, classifier))
+                rows = cls.CURSOR.fetchall()
+
+            for row in rows:
+                tmp = Item(name=row[0], is_produce=True)
+                tmp.price_per_pound = round(row[1], 2)
+
+                item_list.append(tmp)
+
+        return item_list
 
     @classmethod
     def update_weight(cls, weight):
+        """Updates the database with a new shopping cart weight."""
         cls.CURSOR.execute("UPDATE shopping_cart SET current_load='{}' ORDER BY scan_time LIMIT 1".format(int(weight)))
         cls.CONN.commit()
+
+    @classmethod
+    def add_barcode_item(cls, barcode_id, name, weight, price, deviation):
+        """Adds an item to the barcode item database."""
+        cls.CURSOR.execute("INSERT INTO item_db (barcode_id, name, weight, price, deviation)"
+                           "VALUES (%s,%s,%s,%s,%s)", (barcode_id, name, weight, price, deviation))
+        cls.CONN.commit()
+
+    @classmethod
+    def add_produce_item(cls, color, shape, name, price):
+        """Adds an item to the produce item database."""
+        cls.CURSOR.execute("INSERT INTO produce_db_2 (color, shape, result, price_per_pound)"
+                           "VALUES (%s,%s,%s,%s)", (color, shape, name, price))
+        cls.CONN.commit()
+
+    @classmethod
+    def check_in_inventory(cls, name, is_produce):
+        """Check if an item of given name exists in the SQL database.
+
+        Args:
+            name (String): The name of the item to search for.
+            is_produce (boolean): True if the item searched for is produce, False for barcode.
+
+        Returns:
+            boolean: True if the item is a duplicate in the database.
+
+        """
+        # Select from either produce or item database
+        if is_produce:
+            cls.CURSOR.execute("SELECT * FROM produce_db_2 WHERE result=%s", (name))
+        else:
+            cls.CURSOR.execute("SELECT * FROM item_db WHERE name=%s", (name))
+
+        # Fetch the results
+        rows = cls.CURSOR.fetchall()
+
+        # If any results exist for this name, item is a duplicate return TRUE
+        if len(rows) > 0:
+            return True
+        else:
+            return False
 
 def main():
     tmp = Item(barcode='0910293')
@@ -97,6 +155,7 @@ def main():
     # Also note that to do this, you need to have the '@classmethod' decorator above each of the function definitions
     #   that you write
     Database.add_to_cart(tmp)
+
 
 if __name__ == '__main__':
     main()

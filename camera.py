@@ -3,8 +3,6 @@ from subprocess import call, Popen, PIPE
 import threading
 from Queue import Queue
 
-from item import Item
-
 
 class CameraThreaded(threading.Thread):
 
@@ -12,7 +10,7 @@ class CameraThreaded(threading.Thread):
     detect_exe = 'objectdetect'
 
     # Directory containing all cascades
-    cascade_directory = './cascades'
+    cascade_directory = '/home/pi/izot-sdk/izot/testing/cart_project/cascades'
 
     # Name of text file containing all cascade names
     cascade_list = 'cascade_list.txt'
@@ -28,7 +26,7 @@ class CameraThreaded(threading.Thread):
         self.image_complete_event = threading.Event()
         self.process_complete_event = threading.Event()
 
-        self.image_name = './images/img_capture.jpg'
+        self.image_name = '/home/pi/izot-sdk/izot/testing/cart_project/images/img_capture.jpg'
 
     def run(self):
         while True:
@@ -39,12 +37,8 @@ class CameraThreaded(threading.Thread):
 
             # Wait for signal to take a picture
             if self.image_event.is_set():
-
                 # Use fswebcam to take picture
-                Popen(['fswebcam', '-q', '-r', '500x300', '--no-banner', self.image_name]).communicate()
-
-                # DEBUG
-                print 'Picture Taken'
+                Popen(['fswebcam', '-q', '-r', '500x350', '--no-banner', self.image_name]).communicate()
 
                 # Reset flags
                 self.image_event.clear()
@@ -52,67 +46,55 @@ class CameraThreaded(threading.Thread):
 
             # Wait for signal to process an image
             if self.process_event.is_set():
-
-                # DEBUG
-                print 'Processing...'
-
-                # DEBUG
                 (out, err) = Popen(['python2.7', 'script_thread.py', self.image_name], stdout=PIPE).communicate()
 
                 # Process which items it could be based on what it receives
                 result_list = out.strip().split(';')
 
                 possible_items = []
-                for item in result_list:
-                    if item == '':
+                for each in result_list:
+                    # Clear out empty list items
+                    if each == '':
                         continue
-                    # Split HSV and Cascade using separating colon
-                    result = item.split(':')
-                    region = result[0]
-                    cascade = result[1]
 
-                    # Determine item based on combination
-                    # Region1:Round
-                    #   - Orange, Red Apple
-                    #
-                    # Region2:Round
-                    #   - Green Apple
-                    #
-                    # Region1:Banana or Region2:Banana
-                    #   - Banana
-                    #
-                    # Region2:Asparagus
-                    #   - Asparagus
-                    #
-                    # Region2:Lettuce or Region2:Kale
-                    #   - Lettuce, Kale
-                    if region == 'Region1':
-                        if cascade == 'Round':
-                            possible_items.append('Orange')
-                            possible_items.append('Red Apple')
-                        elif cascade == 'Banana':
-                            possible_items.append('Banana')
-                    elif region == 'Region2':
-                        if cascade == 'Round':
-                            possible_items.append('Green Apple')
-                        elif cascade == 'Banana':
-                            possible_items.append('Banana')
-                        elif cascade == 'Asparagus':
-                            possible_items.append('Asparagus Spears')
-                        elif cascade == 'Lettuce':
-                            possible_items.append('Iceberg Lettuce')
-                        elif cascade == 'Kale':
-                            possible_items.append('Kale')
-                    elif region == 'Region3':
-                        pass
+                    possible_items.append(each.split(':'))
 
-                # Build an Item and place it in the Queue
+                # Place the list of region/classifier pairs in the Queue
                 self.completed_item_queue.put(possible_items)
 
                 # Reset flags
                 self.process_event.clear()
                 self.process_complete_event.set()
             # else:
+
+    def take_picture(self):
+        self.image_complete_event.clear()
+        self.image_event.set()
+
+    def process_image(self):
+        self.process_complete_event.clear()
+        self.process_event.set()
+
+    @property
+    def image_complete(self):
+        if self.image_complete_event.is_set():
+            self.image_complete_event.clear()
+            return True
+        else:
+            return False
+
+    @property
+    def processing_complete(self):
+        if self.process_complete_event.is_set():
+            self.process_complete_event.clear()
+            return True
+        else:
+            return False
+
+    def get_results(self):
+        # Return results after completion, unhandled Empty exception to indicate an error
+        return self.completed_item_queue.get_nowait()
+
 
 
 class CameraProcess(threading.Thread):
@@ -135,7 +117,7 @@ class CameraProcess(threading.Thread):
 
     def run(self):
         # Take a picture
-        call(['fswebcam', '-q', '-r', '500x300', '--no-banner', self.image_name])
+        call(['fswebcam', '-r', '500x300', '--no-banner', self.image_name])
 
         # Run HSV and capture
         (out, err) = Popen([self.executable_directory + self.hsv_run, self.image_name], stdout=PIPE).communicate()
@@ -157,7 +139,29 @@ class CameraProcess(threading.Thread):
 
 
 def main():
-    pass
+    import time
+
+    t = CameraThreaded()
+    t.daemon = True
+    t.start()
+
+    try:
+        t.image_event.set()
+
+        # Wait until image is taken
+        while not t.image_complete_event.is_set():
+            pass
+
+        t.process_event.set()
+
+        # Wait until OpenCV finishes
+        while not t.process_complete_event.is_set():
+            pass
+
+        print t.completed_item_queue.get_nowait()
+    finally:
+        pass
+
     sys.exit(0)
 
 

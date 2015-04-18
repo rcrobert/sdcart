@@ -238,12 +238,14 @@ class ADC(object):
         self.spi.writebytes([0x18])  #continuous conversion mode, appends status register to data output, internal 4.92 MHz clock, MCLK2 is tristated
         self.spi.writebytes([0x08])  #sinc4 filter is used, parity disabled, zero latency. output rate falls over to next
         self.spi.writebytes([0x02])
+        print("2400Hz")
 
     def SetMode4800Hz(self):  #4800Hz
         self.spi.writebytes([self.COMM_WRITE | self.COMM_ADDR(self.MODE_REG)])
         self.spi.writebytes([0x18])  #continuous conversion mode, appends status register to data output, internal 4.92 MHz clock, MCLK2 is tristated
         self.spi.writebytes([0x08])  #sinc4 filter is used, parity disabled, zero latency. output rate falls over to next
         self.spi.writebytes([0x01])
+        print("4800Hz")
 
     def ToggleBridgePower(self):
         if not self._bridgePower:
@@ -349,23 +351,21 @@ class ADCController(threading.Thread):
         self.term_event = threading.Event()
 
         # Configurable settings
-        self.cs_pins = [16, 18]
         self.num_chips = 2
         self.num_load_cells = 4
         self.average_count = 120.0
+        print("average count: " + repr(self.average_count))
         self.shift = 6
         self.threshold = 200
         self.deviation_limit = 4.0
-        self.steady_count = 50
+        self.steady_count = 100
 
     def _initialize(self):
         # Instantiate ADCs
-        self._adc_list.append(ADC(0, 0, self.cs_pins[0]))
+        self._adc_list.append(ADC(0, 0, 16))
+        self._adc_list.append(ADC(0, 1, 18))
         self._ADC1 = self._adc_list[0]
-
-        if self.num_chips > 1:
-            self._adc_list.append(ADC(0, 1, self.cs_pins[1]))
-            self._ADC2 = self._adc_list[1]
+        self._ADC2 = self._adc_list[1]
 
         # Iterate through all indices and ADC objects
         for chip, adc in enumerate(self._adc_list):
@@ -384,9 +384,8 @@ class ADCController(threading.Thread):
             adc.BridgePowerOn()
             adc.ZeroScaleCalibration()
             adc.FullScaleCalibration()
+            # adc.SetMode4800Hz()
             adc.SetMode2400Hz()
-
-
             time.sleep(0.001)
 
         # Flag as initialized
@@ -438,16 +437,33 @@ class ADCController(threading.Thread):
             for i in xrange(self.steady_count):
                 ch.stable_array.append(0)
 
+        c = open('LoadCell_4_Calibration', 'a')
+        doneWeighing = True
+        readCount = 0
+        doneDone = False
         while True:
             # Check termination signal for safely ending thread
+
+            if doneWeighing and not doneDone:
+                weightCurrentlyCalibrating = raw_input("type weight being calibrated\n\n")
+                if weightCurrentlyCalibrating == 'x':
+                    c.write("-----------------------------------------------\n")
+                    print("closing write file...")
+                    doneDone = True
+                    c.close()
+                else:
+                    c.write("weight being calibrated: " + repr(weightCurrentlyCalibrating) + "\n")
+                    print("weighing now...\n")
+                    readCount = 0
+                    doneWeighing = False
+
             if self.term_event.is_set():
                 # Perform any necessary cleanup steps
                 self.select_chip(self.CHIP_1)
                 self._ADC1.close()
 
-                if self.num_chips > 1:
-                    self.select_chip(self.CHIP_2)
-                    self._ADC2.close()
+                self.select_chip(self.CHIP_2)
+                self._ADC2.close()
 
                 GPIO.cleanup()
                 break
@@ -455,10 +471,8 @@ class ADCController(threading.Thread):
             # Read data from both ADCs
             self.select_chip(self.CHIP_1)
             read_data[0] = self._ADC1.ReadDataReg()
-
-            if self.num_chips > 1:
-                self.select_chip(self.CHIP_2)
-                read_data[1] = self._ADC2.ReadDataReg()
+            self.select_chip(self.CHIP_2)
+            read_data[1] = self._ADC2.ReadDataReg()
 
             # Iterate through ADC return data
             for chip, data in enumerate(read_data):
@@ -474,15 +488,16 @@ class ADCController(threading.Thread):
                 else:
                     # Raise an error if its neither channel?
                     # TODO: what do we do if it is neither channel
-                    pass
+                    continue
 
                 # Index calculation given an ADC and channel, maps into class constant values for load cells
                 current_load_cell = chip * 2 + channel
                 channel_data = channel_vals[current_load_cell]
 
-                # Use this statement to control load_cells to be skipped
-                # if current_load_cell == self.LOAD_CELL_2 or current_load_cell == self.LOAD_CELL_3:
-                #     continue
+                # TODO: fix LC2 3
+                # if current_load_cell != self.LOAD_CELL_1 or current_load_cell != self.LOAD_CELL_2:
+                if current_load_cell != self.LOAD_CELL_4:
+                    continue
 
                 # Shift out lower bits from raw data
                 shifted_data = data[0] >> self.shift
@@ -515,19 +530,27 @@ class ADCController(threading.Thread):
                         channel_data.is_stable = False
                         channel_data.stable_array = [channel_data.average]
 
-                    # Else if we filled the array and it was unstable
+                    # Else if we filled the array and it was unstable... now stable
                     elif len(channel_data.stable_array) == self.steady_count and not channel_data.is_stable:
                         new_stable = sum(channel_data.stable_array) / self.steady_count
                         delta_val = new_stable - channel_data.stable
 
-                        # Check that the change in weight is large enough
-                        if self.to_grams(delta_val, current_load_cell, new_stable, channel_data.stable) < 20000:
+                        # fixes start up bug that adds huge weight
+                        if self.to_grams(delta_val, current_load_cell) < 20000:
                             # Track accumulated change
-                            delta_weight += self.to_grams(delta_val, current_load_cell, new_stable, channel_data.stable)
+                            delta_weight += self.to_grams(delta_val, current_load_cell, new_stable)
 
                             # DEBUG
-                            # print 'Stable Val: ', channel_data.stable
-                            print 'LC', (current_load_cell + 1), ' grams: ', delta_weight
+                            print 'LC', (current_load_cell + 1), 'delta: ', round(delta_val, 2)
+                            print'LC', (current_load_cell + 1), ' grams: ', delta_weight
+                            if abs(delta_weight) > 2000:
+                                readCount += 1
+                                s = str(round(abs(delta_val), 2))
+                                if not doneDone:
+                                    c.write(s + "\n")
+                                if readCount == 4:
+                                    doneWeighing = True
+                            # print'LC', (current_load_cell + 1), ' lbs: ', round(self.grams_to_lbs(delta_weight),2)
 
                         # Update the saved stable value
                         channel_data.stable = new_stable
@@ -542,24 +565,14 @@ class ADCController(threading.Thread):
                             channel_data.stable_array.pop(0)
                         channel_data.stable_array.append(channel_data.average)
 
-            # Check that all cells are stable
-            all_stable = True
-            for each in channel_vals:
-                if not each.is_stable:
-                    all_stable = False
-                    break
-
             # Update only when the accumulated change is large enough
-            # if abs(self.grams_to_lbs(delta_weight)) > 0.01:
-            if abs(delta_weight) > 2.0:
-                # print("total weight: " + repr(currentWeight) + " lbs")
-                # print("grams: " + repr(round(currentWeight * 453.592, 1)) + " g")
-
+            if abs(self.grams_to_lbs(delta_weight)) > 0.01:
 
                 # Block to acquire the lock
                 if self.weight_lock.acquire():
                     # Update weight
-                    self.weight += delta_weight
+                    # self.weight += round(self.grams_to_lbs(delta_weight), 2)
+                    self.weight += delta_weight #ORIGINAL SETUP***********************************
 
                     # Release when done
                     self.weight_lock.release()
@@ -567,17 +580,8 @@ class ADCController(threading.Thread):
                 # Reset accumulated change
                 delta_weight = 0.0
 
-                print 'Total weight: ', round(self.weight, 3), ' grams'
-                print round(self.grams_to_lbs(self.weight), 3), ' lbs'
-
-    def zero(self):
-        # Block to acquire the lock
-        if self.weight_lock.acquire():
-            # Reset weight total
-            self.weight = 0.0
-
-            # Release when done
-            self.weight_lock.release()
+                # print 'Total weight: ', round(self.weight, 3), ' grams'
+                # print round(self.grams_to_lbs(self.weight), 3), ' lbs'
 
     def select_chip(self, chip):
         """Select an ADC to communicate with.
@@ -612,43 +616,38 @@ class ADCController(threading.Thread):
     @staticmethod
     def grams_to_lbs(val):
         return val * 0.00220462
+    @staticmethod
+    def lbs_to_grams(val):
+        return val * 453.59237
 
     @classmethod
-    def to_grams(cls, val, load_cell, raw_val, last_rawVal):
+    def to_grams(cls, val, load_cell, raw_val=0):
             if load_cell == cls.LOAD_CELL_1:
-                if raw_val < 136500 and last_rawVal < 136500:
-                    print("raw val: " + repr(raw_val))
-                    return round(val * 0.5249 - 0.0133, 1)
-                elif raw_val > 136500 or last_rawVal > 136500:
-                    print("big")
-                    return round(val * 0.5246, 1)
-                return round(val * 0.5249 + 0.0133, 1)
+                # return round(val * 0.5249 + 0.0019, 1)
+                return round(val * 0.529 + 0.0242, 1)  #External scale calibration
             elif load_cell == cls.LOAD_CELL_2:
-                # if raw_val < 136500 and last_rawVal < 136500:
+                return round(val * 0.529 + 0.0242, 1)
+                # if val < 2500:
+                #     return round(val * 0.529 + 0.0242, 1)  #External scale calibration
+                # else:
+                #     return round(val * 0.5271 + 9.3818, 1)
+
+                # if abs(val) < 4350:
+                #     return round(val * 0.529 + 0.0242, 1)  #External scale calibration
+                # else:
+                #     return round(val * 0.5285, 1)
+                # if abs(raw_val) < 136100:
                 #     print("raw val: " + repr(raw_val))
-                #     return round(val * 0.5059 - 0.5177, 1)
-                # elif raw_val > 136500 or last_rawVal > 136500:
+                #     return round(val * 0.529 + 0.0242, 1)  #External scale calibration
+                # else:
                 #     print("big")
-                #     return round(val * 0.5057 + 0.5177, 1)
-                return round(val * 0.5059 + 0.5177, 1)
+                #     return round(val * 0.5285, 1)
 
             elif load_cell == cls.LOAD_CELL_3:
-                if raw_val < 136500 and last_rawVal < 136500:
-                    print("raw val: " + repr(raw_val))
-                    return round(val * 0.5016 - 0.0469, 1)
-                elif raw_val > 136500 or last_rawVal > 136500:
-                    print("big")
-                    return round(val * 0.5017 + 0.1927, 1)
-                # return round(val * 0.5016 + 0.0469, 1)
+                return round(val * 0.5016 + 0.0469, 1)
             elif load_cell == cls.LOAD_CELL_4:
-                if raw_val < 136500 and last_rawVal < 136500:
-                    print("raw val: " + repr(raw_val))
-                    print("last raw val: " + repr(last_rawVal))
-                    return round(val * 0.5103 - 0.053, 1)
-                elif raw_val > 136500 or last_rawVal > 136500:
-                    print("big: " + repr(raw_val))
-                    return round(val * 0.5087, 1)
-                # return round(val * 0.5103 + 0.053, 1)
+                return round(val * 0.5103 - 0.0511, 1)
+
 
 
 def main():
@@ -659,6 +658,7 @@ def main():
 
     try:
         adc_control.start()
+
         while True:
             pass
     except KeyboardInterrupt:

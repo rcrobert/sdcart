@@ -1,21 +1,35 @@
-import threading
-import sys
-from Queue import Queue, Empty, Full
-import time
+from Queue import Queue, Empty
 from Tkinter import *
 import pymysql
+
+from subprocess import call, Popen, PIPE
 
 from barcode import BarcodeThreaded
 from camera import CameraThreaded
 from item import Item
 from gui import DisplayManager, DisplayEvent
-from weight import WeightManager
-from database import Database
+from weight import IncrementalWeightManager
+from database import Database, NoItem
+# from PWM import LED
 
 # PLANNED CHANGES
-# * Implement the new DisplayEvent class, expect instances of these to come from the DisplayManager class
 
 # BUGS
+# * Crashes when camera.py calls Popen in response to a GUI event. Could be issues with memory limitations or it could
+#   be that the new scripts were not loaded on the Pi yet and caused a crash. Unlikely since a call to fswebcam was
+#   able to crash it. If memory is an issue, do not keep the producescreen or picturescreen loaded, load them
+#   dynamically as needed.
+
+#   UPDATE: Not memory, able to remove DisplayManager.producescreen or add 4 more instances and no effect on runtime
+#   behavior.
+
+#   Calling Popen also crashes it when called inside of main. It is not a permissions issue, running as sudo still
+#   crashes. Using call() instead of Popen() does not fix it. Popen() is not raising any exceptions. Popen() crashes on
+#   any process opened including 'date'.
+
+#   Maybe this Popen call is not thread-safe?
+
+#   SOLVED: Including the PWM/LED library causes subprocess.Popen() and subprocess.call() to fail.
 
 # NOTES
 # * Tkinter is NOT THREAD-SAFE. Make sure to keep all processing inside the .after callback function or inside of other
@@ -26,13 +40,18 @@ class CartManager(object):
     def __init__(self):
         self.pending_items = Queue(maxsize=20)
         self.item_list = []
+        self.last_item = None
+
+        # Initialize LEDs
+        # LED.initLeds()
+        # LED.statusLedsOFF()
 
         # Instantiate weight manager
-        self.weight_manager = WeightManager()
+        self.weight_manager = IncrementalWeightManager()
 
         # Instantiate threads
         self.threads = {
-            'barcode': BarcodeThreaded(scan_dir='/dev/hidraw1'),
+            'barcode': BarcodeThreaded(scan_dir='/dev/hidraw2'),
             'camera': CameraThreaded(),
             'adc': self.weight_manager.adc_controller
         }
@@ -44,7 +63,8 @@ class CartManager(object):
 
         # Reset SQL cart data
         Database.empty_cart()
-        self.sql_update_count = 0
+        self.second_count = 0
+        self.weight_tare_count = 0
 
         # Instantiate GUI
         self.root = Tk()
@@ -60,7 +80,11 @@ class CartManager(object):
         # Start GUI
         self.display = DisplayManager(self.root, self.gui_event_handler)
         self.root.after(250, self.runtime_interrupt)
-        self.root.mainloop()
+
+        try:
+            self.root.mainloop()
+        except KeyboardInterrupt:
+            pass
 
         # If we exit mainloop, we are done
         # Close all threads
@@ -85,25 +109,48 @@ class CartManager(object):
 
         :return: None.
         """
+
+        # For items scanned or completed via produce selection, add them to the internal cart list and the SQL database
         try:
             # Check for items waiting to be added to the cart
             tmp = self.pending_items.get_nowait()
 
             # Produce items already have SQL data, populate others
             if not tmp.is_produce:
-                Database.request_info(tmp)
+                try:
+                    Database.request_info(tmp)
 
-            # Add item to weight manager
-            self.weight_manager.add_item(tmp)
+                    # Add item to weight manager
+                    self.weight_manager.add_item(tmp)
 
-            # Update current list of items
-            self.item_list.append(tmp)
+                    # Update current list of items
+                    self.item_list.append(tmp)
 
-            # Update displayed list
-            self.display.add_item(tmp)
+                    # Update displayed list
+                    self.display.add_item(tmp)
 
-            # Update SQL database shopping cart
-            Database.add_to_cart(tmp)
+                    # Update SQL database shopping cart
+                    Database.add_to_cart(tmp)
+                except NoItem:
+                    # Item does not exist in database
+                    self.display.enable_popup_button()
+                    self.display.show_popup()
+                    self.display.set_popup_text('Unrecognized barcode.')
+            else:
+                # Give it a deviation
+                tmp.d_weight = 15.0
+
+                # Add item to weight manager
+                self.weight_manager.add_item(tmp)
+
+                # Update current list of items
+                self.item_list.append(tmp)
+
+                # Update displayed list
+                self.display.add_item(tmp)
+
+                # Update SQL database shopping cart
+                Database.add_to_cart(tmp)
         except Empty:
             pass
 
@@ -118,32 +165,24 @@ class CartManager(object):
             pass
 
         # Check for picture completion
-        if self.threads['camera'].image_complete_event.is_set():
+        if self.threads['camera'].image_complete:
             # Update the image and set flag
             self.image_taken = True
             self.display.update_image(self.threads['camera'].image_name)
 
-            # Reset flag
-            self.threads['camera'].image_complete_event.clear()
-
         # Check for OpenCV processing completion
-        if self.threads['camera'].process_complete_event.is_set():
+        if self.threads['camera'].processing_complete:
             if self.display.current_screen == self.display.picturescreen:
-                # Update produce list, unhandled Empty exception to indicate an error
-                new_list = self.threads['camera'].completed_item_queue.get_nowait()
+                # Update produce list
+                classifier_list = self.threads['camera'].get_results()
+                print classifier_list
 
-                if new_list:
+                if classifier_list:
                     # Clear the image
                     self.display.update_image(None)
 
                     # Construct items from the names returned by OpenCV
-                    new_items = []
-                    for name in new_list:
-                        new_items.append(Item(name=name, is_produce=True))
-
-                    # Populate them so we have price per pound values
-                    for item in new_items:
-                        Database.request_info(item)
+                    new_items = Database.get_produce_list(classifier_list)
 
                     # Update the produce display's list
                     self.display.update_produce_list(new_items)
@@ -162,48 +201,76 @@ class CartManager(object):
                     self.display.set_popup_text('Item not recognized.\nPlease try again.')
                     self.display.show_popup()
 
-            # Reset flag
-            self.threads['camera'].process_complete_event.clear()
-
         # Check weight values
         self.weight_manager.update()
 
         # Check for errors
         if self.weight_manager.error:
-            # Update the warning label
-            if self.weight_manager.error_type == WeightManager.OUT_OF_RANGE:
-                # Display popup warning without a button
-                self.display.disable_popup_button()
-                self.display.show_popup()
-                self.display.set_popup_text('Weight out of range')
-            elif self.weight_manager.error_type == WeightManager.WRONG_ITEM:
-                # Display popup warning without a button
-                self.display.disable_popup_button()
-                self.display.show_popup()
-                self.display.set_popup_text('Incorrect item')
-            elif self.weight_manager.error_type == WeightManager.WAITING_FOR_ADD:
-                # Display popup warning without a button
-                self.display.disable_popup_button()
-                self.display.show_popup()
-                self.display.set_popup_text('Please add item to cart')
-            elif self.weight_manager.error_type == WeightManager.WAITING_FOR_REMOVE:
-                # Display popup warning without a button
-                self.display.disable_popup_button()
-                self.display.show_popup()
-                self.display.set_popup_text('Please remove item from cart')
+            # Set LEDs red
+            # LED.statusLedsRED()
+
+            # Update weight manager warnings on Homescreen
+            if self.display.current_screen == self.display.homescreen:
+                if self.weight_manager.error_type == IncrementalWeightManager.OUT_OF_RANGE_HIGH:
+                    # Display popup warning without a button
+                    self.display.disable_popup_button()
+                    self.display.show_popup()
+                    self.display.set_popup_text('Foreign item in cart\nActual: {}g'.format(self.weight_manager._get_weight()))
+
+                elif self.weight_manager.error_type == IncrementalWeightManager.OUT_OF_RANGE_LOW:
+                    # Display popup warning without a button
+                    self.display.disable_popup_button()
+                    self.display.show_popup()
+                    self.display.set_popup_text('Missing item from cart\nActual: {}g'.format(self.weight_manager._get_weight()))
+
+                elif self.weight_manager.error_type == IncrementalWeightManager.WRONG_ITEM:
+                    # Display popup warning without a button
+                    self.display.disable_popup_button()
+                    self.display.show_popup()
+                    if self.weight_manager._pending_item:
+                        self.display.set_popup_text('Incorrect item.\nActual: {}g\nExpected: {}g'.format(self.weight_manager.weight_reading, self.weight_manager._pending_item.weight))
+                    else:
+                        self.display.set_popup_text('Incorrect item.')
+
+                elif self.weight_manager.error_type == IncrementalWeightManager.WAITING_FOR_ADD:
+                    # Display popup warning without a button
+                    self.display.disable_popup_button()
+                    self.display.show_popup()
+                    self.display.set_popup_text('Please add item to cart')
+
+                elif self.weight_manager.error_type == IncrementalWeightManager.WAITING_FOR_REMOVE:
+                    # Display popup warning without a button
+                    self.display.disable_popup_button()
+                    self.display.show_popup()
+                    self.display.set_popup_text('Please remove item from cart')
         else:
-            # Clear the warning displayed
-            self.display.hide_popup()
+            # Clear weight manager warnings on Homescreen
+            if self.display.current_screen == self.display.homescreen and not self.display.is_button_popup():
+                self.display.hide_popup()
 
         # Keep display weight updated in the produce screen
         if self.display.current_screen == self.display.producescreen:
             self.display.set_weight(self.weight_manager.grams_to_pounds(self.weight_manager.produce_weight))
 
         # Update SQL every nth iteration
-        self.sql_update_count += 1
-        if self.sql_update_count == 5:
-            Database.update_weight(self.weight_manager.weight)
-            self.sql_update_count = 0
+        self.second_count += 1
+        if self.second_count == 5:
+            # Update the weight every second
+            Database.update_weight(self.weight_manager.total_weight)
+
+            # Increment our weight tare timer
+            if not self.weight_manager.busy:
+                self.weight_tare_count += 1
+
+                if self.weight_tare_count == 5:
+                    # Clear the scale if we have any small accumulated errors
+                    if not self.weight_manager.busy and self.weight_manager.weight_reading <= 5.0:
+                        self.weight_manager.tare()
+            else:
+                self.weight_tare_count = 0
+
+            # Reset counter
+            self.second_count = 0
 
         # Schedule another interrupt
         self.root.after(200, self.runtime_interrupt)
@@ -228,13 +295,13 @@ class CartManager(object):
                     self.image_taken = False
             elif event.type == DisplayEvent.EVENT_BTN_HELP:
                 # TODO: Implement Help button
-                pass
+                self.root.destroy()
             elif event.type == DisplayEvent.EVENT_BTN_REMOVEITEM:
                 # Do not allow if items are still pending
                 if not self.weight_manager.busy and not self.weight_manager.error:
 
                     # Remove the item from our list
-                    self.item_list.pop(self.item_list.index(event.selection))
+                    self.last_item = self.item_list.pop(self.item_list.index(event.selection))
 
                     # Update the display
                     event.handle_event()
@@ -246,13 +313,16 @@ class CartManager(object):
                     self.weight_manager.remove_item(event.selection)
             elif event.type == DisplayEvent.EVENT_BTN_CANCEL:
                 # Must be an action pending
-                if self.weight_manager.cancel_operation():
-                    # TODO: verify this, seems to be assuming that only additions can be canceled
-                    # Cancel pending action
-                    tmp = self.item_list.pop()
+                if self.weight_manager.busy:
+                    if self.weight_manager.pending_addition:
+                        tmp = self.item_list.pop()
+                        Database.remove_from_cart(tmp)
+                    elif self.weight_manager.pending_removal:
+                        self.item_list.append(self.last_item)
+                        Database.add_to_cart(self.last_item)
 
-                    # Remove from remote database list
-                    Database.remove_from_cart(event.selection)
+                    # Cancel the expected weight action
+                    self.weight_manager.cancel_operation()
 
                     # Update the display
                     event.handle_event()
@@ -268,12 +338,10 @@ class CartManager(object):
                     self.display.show_popup()
 
                     # Set flag to process the image, completion is checked in runtime_interrupt
-                    self.threads['camera'].process_complete_event.clear()
-                    self.threads['camera'].process_event.set()
+                    self.threads['camera'].process_image()
             elif event.type == DisplayEvent.EVENT_BTN_NEWIMAGE:
                 # Set flag to take a picture, completion is checked in runtime_interrupt
-                self.threads['camera'].image_complete_event.clear()
-                self.threads['camera'].image_event.set()
+                self.threads['camera'].take_picture()
             elif event.type == DisplayEvent.EVENT_BTN_CANCEL:
                 # Reset image flag
                 self.image_taken = False

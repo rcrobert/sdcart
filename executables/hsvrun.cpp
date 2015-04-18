@@ -73,8 +73,8 @@ int main( int argc, char** argv )
 }
 
 int GrayScale(int a, int b){
-  float saturationThreshold = 80;
-  float valueThreshold = 70;
+  float saturationThreshold = 90;
+  float valueThreshold = 80;
   int isGrayScale = 0;
 
   if(a < saturationThreshold){      

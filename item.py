@@ -21,11 +21,12 @@ class Item(object):
         price_per_pound (float): The price per pound of the item. Used only for produce items.
         d_weight (float): The amount of deviation from the item's listed weight.
     """
-    def __init__(self, barcode=None, name=None, weight=None, is_produce=False):
+    def __init__(self, barcode=None, name=None, weight=None, is_produce=False, opencv_results=None):
         self.barcode = barcode
         self.weight = weight
         self.name = name
         self.is_produce = is_produce
+        self.opencv_results = opencv_results
 
         self.price_per_pound = None
         self.d_weight = None
@@ -48,7 +49,7 @@ class Item(object):
         if self.is_produce:
             # Do not attempt to round if either member is None type
             if self.price_per_pound and self.weight:
-                return round(self.price_per_pound * self.weight, 2)
+                return round(self.price_per_pound * self.grams_to_pounds(self.weight), 2)
         else:
             if self._price:
                 return round(self._price, 2)
