@@ -1,2 +1,0 @@
-round.xml
-banana.xml

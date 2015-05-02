@@ -18,26 +18,26 @@ else:
 # parse hsv results
 vals = re.findall(r"\d*\.\d*", out)
 
+vals[0] = float(vals[0])
+
 cascade_list = []
 
+with open('./cascades/cascades.txt') as text:
+    for line in text:
+        cascade_list.append(line.rstrip())
+
 # determine color region
-if float(vals[1]) <= 22 or float(vals[1]) > 280:
-    found = 1
-    with open('./cascades/test1.txt') as text:
-        for line in text:
-            cascade_list.append(line.rstrip())
+if float(vals[1]) <= 55 or float(vals[1]) > 280:
+    found = 1   
 
-if 22 < float(vals[1]) <= 150:
+if 55 < float(vals[1]) <= 150:
     found = 2
-    with open('./cascades/test2.txt') as text:
-        for line in text:
-            cascade_list.append(line.rstrip())
-
+   
 if 150 < float(vals[1]) <= 280:
     found = 3
-    with open('./cascades/test3.txt') as text:
-        for line in text:
-            cascade_list.append(line.rstrip())
+
+if vals[0] < 0.25:
+    found = 0
 
 # number of cascades passed
 cascadeTotal = 0
@@ -48,25 +48,45 @@ for c in cascade_list:
     (out, err) = proc.communicate()
     # print 'Using {0} cascade: '.format(c.strip('.xml')), out.strip()
     if out.strip() == '0':
-        if c.strip('.xml') == 'round':
+        if c.strip('.xml') == 'Round':
+            if found == 0:
+                print 'Region0:Round;',
             if found == 1:
                 print 'Region1:Round;',
             if found == 2:
                 print 'Region2:Round;',
-        elif c.strip('.xml') == 'banana':
+            if found == 3:
+                print 'Region3:Round;',
+        elif c.strip('.xml') == 'Long':
             if found == 1:
-                print 'Region1:Banana;',
+                print 'Region1:Long;',
             if found == 2:
-                print 'Region2:Banana;',
-        elif c.strip('.xml') == 'asparagus':
-            print 'Region2:Asparagus;',
+                print 'Region2:Long;',
+            if found == 3:
+                print 'Region3:Long;',
+        elif c.strip('.xml') == 'Bunch':
+            if found == 1:
+                print 'Region1:Bunch;',
+            if found == 2:
+                print 'Region2:Bunch;',
+            if found == 3:
+                print 'Region3:Bunch;',
         cascadeTotal += 1
 
 # TEMP if none of above and ratios are right
+
 if cascadeTotal == 0:
+    if found == 1:
+        if vals[0] > 0.25:
+            print 'Region1:None;'
     if found == 2:
         if vals[0] > 0.25:
-            print 'Region2:Lettuce;Region2:Kale;',
+            print 'Region2:None;',
+    if found == 3:
+        if vals[0] > 0.25:
+            print 'Region3:None;',
+    if vals[0] <= 0.25:
+        print 'Region0:None;'
 
 # exit gracefully
 sys.exit(0)
