@@ -738,7 +738,7 @@ class HomeScreen(ListScreen):
         self._last_removed = None
 
         # Remove parent class's label
-        self.warning_label.grid_forget()
+        # self.warning_label.grid_forget()
 
         # Fill up button section
         # TODO: put Help back in when its implemented

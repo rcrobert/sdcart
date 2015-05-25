@@ -51,7 +51,7 @@ class CartManager(object):
 
         # Instantiate threads
         self.threads = {
-            'barcode': BarcodeThreaded(scan_dir='/dev/hidraw2'),
+            'barcode': BarcodeThreaded(scan_dir='/dev/hidraw1'),
             'camera': CameraThreaded(),
             'adc': self.weight_manager.adc_controller
         }
@@ -136,6 +136,7 @@ class CartManager(object):
                     self.display.enable_popup_button()
                     self.display.show_popup()
                     self.display.set_popup_text('Unrecognized barcode.')
+                    self.weight_manager.set_red_lights()
             else:
                 # Give it a deviation
                 tmp.d_weight = 15.0
@@ -215,20 +216,23 @@ class CartManager(object):
                     # Display popup warning without a button
                     self.display.disable_popup_button()
                     self.display.show_popup()
-                    self.display.set_popup_text('Foreign item in cart\nActual: {}g'.format(self.weight_manager._get_weight()))
+                    # self.display.set_popup_text('Foreign item in cart\nActual: {}g'.format(self.weight_manager._get_weight()))
+                    self.display.set_popup_text('Foreign item in cart.')
 
                 elif self.weight_manager.error_type == IncrementalWeightManager.OUT_OF_RANGE_LOW:
                     # Display popup warning without a button
                     self.display.disable_popup_button()
                     self.display.show_popup()
-                    self.display.set_popup_text('Missing item from cart\nActual: {}g'.format(self.weight_manager._get_weight()))
+                    # self.display.set_popup_text('Missing item from cart\nActual: {}g'.format(self.weight_manager._get_weight()))
+                    self.display.set_popup_text('Missing item from cart.')
 
                 elif self.weight_manager.error_type == IncrementalWeightManager.WRONG_ITEM:
                     # Display popup warning without a button
                     self.display.disable_popup_button()
                     self.display.show_popup()
                     if self.weight_manager._pending_item:
-                        self.display.set_popup_text('Incorrect item.\nActual: {}g\nExpected: {}g'.format(self.weight_manager.weight_reading, self.weight_manager._pending_item.weight))
+                        # self.display.set_popup_text('Incorrect item.\nActual: {}g\nExpected: {}g'.format(self.weight_manager.weight_reading, self.weight_manager._pending_item.weight))
+                        self.display.set_popup_text('Incorrect item.')
                     else:
                         self.display.set_popup_text('Incorrect item.')
 
@@ -254,20 +258,22 @@ class CartManager(object):
 
         # Update SQL every nth iteration
         self.second_count += 1
+
+        # if self.weight_manager.busy:
+        #     self.weight_tare_count = 0
+
         if self.second_count == 5:
             # Update the weight every second
             Database.update_weight(self.weight_manager.total_weight)
 
             # Increment our weight tare timer
             if not self.weight_manager.busy:
-                self.weight_tare_count += 1
+                # Clear the scale if we have any small accumulated errors
+                if not self.weight_manager.busy and abs(self.weight_manager.weight_reading) <= 10.0:
+                    self.weight_manager.tare()
 
-                if self.weight_tare_count == 5:
-                    # Clear the scale if we have any small accumulated errors
-                    if not self.weight_manager.busy and self.weight_manager.weight_reading <= 5.0:
-                        self.weight_manager.tare()
-            else:
-                self.weight_tare_count = 0
+            # TODO Remove this shit
+            # self.display.homescreen._warning_string.set('Actual: {}g'.format(self.weight_manager.weight_reading))
 
             # Reset counter
             self.second_count = 0

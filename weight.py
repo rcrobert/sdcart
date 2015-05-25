@@ -112,6 +112,8 @@ class IncrementalWeightManager(object):
                     self.error_type = self.WAITING_FOR_ADD
 
                     # TODO: LEDs go yellow
+                    LEDController.toggle(LEDController.RED, 0)
+                    LEDController.toggle(LEDController.GREEN, 0)
 
         # Check if pending removal is resolved
         elif self.pending_removal:
@@ -149,6 +151,8 @@ class IncrementalWeightManager(object):
                     self.error_type = self.WAITING_FOR_REMOVE
 
                     # TODO: LEDs go yellow
+                    LEDController.toggle(LEDController.RED, 0)
+                    LEDController.toggle(LEDController.GREEN, 0)
 
         # Handle produce mode differently
         elif self._produce_mode:
@@ -263,6 +267,11 @@ class IncrementalWeightManager(object):
 
     def tare(self):
         self.adc_controller.zero()
+
+    def set_red_lights(self):
+        self._lights_on = True
+        LEDController.toggle(LEDController.RED, 1)
+        LEDController.toggle(LEDController.GREEN, 0)
 
     @staticmethod
     def grams_to_pounds(val):
